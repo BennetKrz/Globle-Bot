@@ -1,0 +1,22 @@
+# Run the Globle bot on your Pi, headless, surviving reboots.
+#
+#   docker compose up -d --build        # build + start in the background
+#   docker compose logs -f              # watch it connect ("Logged in as ...")
+#   docker compose run --rm bot npm run deploy   # register slash commands (run once)
+#   docker compose down                 # stop
+#
+# Secrets come from a .env file next to this file (copy .env.example).
+services:
+  bot:
+    build: .
+    image: globle-bot
+    container_name: globle-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Named volume => player history persists across rebuilds.
+      - globle-state:/data
+    # No `ports:` — the bot makes only outbound connections to Discord.
+
+volumes:
+  globle-state:
