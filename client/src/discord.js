@@ -25,7 +25,7 @@ import { openSession, openDevSession } from "./api.js";
  * a member holding Manage Server can answer. This app's commands are registered
  * with the bot token, so no player is ever the one granting them..
  */
-const SCOPES = ["identify", "guilds.members.read""];
+const SCOPES = ["identify", "guilds.members.read"];
 
 /**
  * Run the full handshake.
