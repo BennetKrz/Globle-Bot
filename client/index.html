@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- `resizes-visual` pins the on-screen keyboard to the visual viewport: the
+         layout viewport keeps its height, so the canvas holds its size and the
+         board does not re-fit every time the player taps the guess box. The gap
+         between the two viewports is what keyboard.js measures. Browsers that
+         report the keyboard's geometry are taken off this path entirely; see
+         keyboard.js. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, interactive-widget=resizes-visual"
+    />
+    <title>Globle</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="board"></canvas>
+      <div id="vignette"></div>
+
+      <div id="hud">
+        <header id="topbar">
+          <div id="status" class="pill"></div>
+          <div id="streak" class="pill" hidden></div>
+          <div class="spacer"></div>
+          <button id="hard-toggle" class="pill button switch" type="button" aria-pressed="false">
+            <span id="hard-toggle-label"></span>
+            <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+          </button>
+          <button id="dev-reset" class="pill button dev" type="button" hidden>↺ Reset</button>
+          <button id="mode-toggle" class="pill button" type="button"></button>
+          <button id="view-toggle" class="pill button" type="button"></button>
+          <button id="lang-toggle" class="pill button" type="button"></button>
+        </header>
+
+        <section id="guesses" class="panel" hidden>
+          <h2 id="guesses-title"></h2>
+          <ol id="guess-list"></ol>
+        </section>
+
+        <section id="players" class="panel" hidden>
+          <h2 id="players-title"></h2>
+          <ol id="player-list"></ol>
+        </section>
+
+        <footer id="bottombar">
+          <div id="entry">
+            <input id="guess-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <ul id="suggestions" hidden></ul>
+            <button id="guess-submit" class="button primary" type="button"></button>
+          </div>
+          <button id="giveup" class="button subtle" type="button"></button>
+          <button id="practice-new" class="button subtle" type="button" hidden></button>
+        </footer>
+
+        <div id="message" hidden></div>
+      </div>
+
+      <div id="splash">
+        <div id="splash-inner">
+          <div id="splash-globe">🌍</div>
+          <p id="splash-text">Loading…</p>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
