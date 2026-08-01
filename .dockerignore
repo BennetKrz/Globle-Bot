@@ -1,5 +1,7 @@
 # Keep the build context small and never bake secrets or local state into the image.
 node_modules
+client/node_modules
+client/dist
 npm-debug.log*
 .env
 .env.*

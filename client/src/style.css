@@ -1,0 +1,594 @@
+/*
+ * The activity fills whatever frame Discord hands it -- focused, picture-in-
+ * picture, or a phone in portrait. There is no fullscreen API to call, so the
+ * layout is fluid at every level and the chrome floats over a canvas that is
+ * always the full viewport.
+ *
+ * Discord exposes safe-area insets as CSS variables on mobile, falling back to
+ * the standard env() values, so the HUD stays clear of notches and gesture bars.
+ */
+
+:root {
+  --sait: var(--discord-safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --saib: var(--discord-safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --sail: var(--discord-safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --sair: var(--discord-safe-area-inset-right, env(safe-area-inset-right, 0px));
+
+  /* How much of the frame the on-screen keyboard covers, written by keyboard.js.
+     The keyboard shrinks the visual viewport and leaves the layout viewport
+     alone, so this is the only thing that tells the layout it is there. */
+  --kb: 0px;
+
+  --ink: #f2f3f5;
+  --ink-dim: #b5bac1;
+  --surface: rgba(30, 31, 34, 0.86);
+  --surface-solid: #1e1f22;
+  --edge: rgba(255, 255, 255, 0.09);
+  --accent: #5865f2;
+  --win: #3ba55c;
+  --lose: #ed4245;
+  --radius: 10px;
+
+  color-scheme: dark;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #04141f;
+  color: var(--ink);
+  font: 15px/1.45 "gg sans", "Noto Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior: none;
+}
+
+/* `--frame` is the height the board draws at. It tracks the frame, except while
+   the keyboard is up, when keyboard.js pins it to the height the frame had before
+   the keyboard opened. Frames that answer a keyboard by shrinking would otherwise
+   resize the canvas and re-fit the camera out from under the player. */
+#board {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--frame, 100%);
+  display: block;
+  touch-action: none; /* the board handles its own pan and pinch */
+}
+
+/* The board is lit from nowhere -- it is drawn, not rendered -- so the light on
+   the table is faked here instead: a wash that leaves the middle of the board
+   alone and pulls the corners down toward the surface it sits on. */
+#vignette {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: var(--frame, 100%);
+  pointer-events: none;
+  background: radial-gradient(
+    128% 110% at 50% 46%,
+    rgba(0, 0, 0, 0) 48%,
+    rgba(0, 0, 0, 0.1) 76%,
+    rgba(0, 0, 0, 0.3) 100%
+  );
+}
+
+/* Country names on the 3D board are HTML rather than generated text geometry:
+   crisp at any zoom, no font parser in the bundle, no CDN request to be
+   blocked. The layer tracks the canvas and never intercepts a pointer. */
+.label-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Set like a territory name on a printed board: small, spaced, upper case. */
+.map-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #f6ecd8;
+  white-space: nowrap;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 0.9);
+  transform: translateY(-2px);
+  user-select: none;
+}
+
+/* --- HUD ------------------------------------------------------------------ */
+
+/*
+ * The HUD is a full-screen grid that does not receive pointer events itself;
+ * only its controls do. Everything the player does not touch stays draggable
+ * map.
+ *
+ * The bottom inset stacks the keyboard on top of the gesture bar. Adding the two
+ * rather than taking the larger keeps the declaration to plain `calc`, and the
+ * few pixels it overshoots by while the keyboard is open cost nothing. This is
+ * the only part of the layout the keyboard moves: the canvas, the vignette and
+ * the top bar are anchored to the layout viewport, which the keyboard leaves
+ * alone, so the map holds still while the entry row rides above the keys.
+ */
+#hud {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  grid-template-columns: minmax(0, 1fr);
+  padding: calc(10px + var(--sait)) calc(10px + var(--sair))
+    calc(10px + var(--saib) + var(--kb)) calc(10px + var(--sail));
+  gap: 10px;
+  pointer-events: none;
+}
+
+#hud > * {
+  pointer-events: auto;
+}
+
+#topbar {
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#topbar > * {
+  pointer-events: auto;
+}
+
+.spacer {
+  flex: 1;
+  pointer-events: none;
+}
+
+.pill {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  padding: 6px 13px;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  backdrop-filter: blur(8px);
+}
+
+.button {
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  transition: background-color 0.12s ease, transform 0.06s ease;
+}
+
+.button:active {
+  transform: scale(0.97);
+}
+
+.pill.button:hover {
+  background: rgba(60, 62, 68, 0.9);
+}
+
+/* The reset button, which only a development server puts on screen. Tinted like
+   the give-up colour so it never passes for one of the game's own controls. */
+.pill.button.dev {
+  color: var(--lose);
+  border-color: rgba(237, 66, 69, 0.4);
+}
+
+.pill.button.dev:hover {
+  background: rgba(237, 66, 69, 0.16);
+}
+
+/* A pill that carries its own on/off next to the label, for a setting that has
+   no opposite to name. The track is sized off the pill's font so it lines up
+   with the text rather than with a fixed pixel grid. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.switch-track {
+  position: relative;
+  flex: none;
+  width: 26px;
+  height: 15px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1px var(--edge);
+  transition: background-color 0.16s ease;
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ink);
+  transition: transform 0.16s ease;
+}
+
+.switch.on .switch-knob {
+  transform: translateX(11px);
+}
+
+/* A toggle whose game has already started. It stays on screen so the mode the
+   game is being played under is still readable. */
+.pill.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pill.button:disabled:hover {
+  background: var(--surface);
+}
+
+/* --- Panels --------------------------------------------------------------- */
+
+/* Both panels share the middle row and are pinned to opposite edges of it. The
+   column is named explicitly because auto-placement would otherwise give the
+   second panel an implicit column, which narrows the row the top bar sits in
+   and drags its right-aligned controls inward. */
+.panel {
+  align-self: start;
+  justify-self: start;
+  grid-row: 2;
+  grid-column: 1;
+  max-width: min(300px, 42vw);
+  max-height: 100%;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  backdrop-filter: blur(8px);
+  scrollbar-width: thin;
+}
+
+#players {
+  justify-self: end;
+}
+
+.panel h2 {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-dim);
+  margin-bottom: 6px;
+}
+
+.panel ol {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* A guess row: colour chip, country, distance. The chip carries the same fill
+   the country has on the map, which is what ties the list to the board. */
+.guess {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.guess .chip {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: none;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+.guess .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.guess .distance {
+  color: var(--ink-dim);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+.guess.correct .name {
+  font-weight: 700;
+  color: var(--win);
+}
+
+/* The roster. Everyone playing today is here, whether they have finished or not,
+   each with the grid their guesses have scored so far.
+
+   The panel is one grid rather than a stack of rows, so the guess grids and the
+   counts hold their columns however long a name runs or however many squares a
+   row has scored. Rows are `display: contents` and contribute four cells: name,
+   grid, count, unit. */
+#player-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: baseline;
+  column-gap: 6px;
+  row-gap: 3px;
+}
+
+.player-row {
+  display: contents;
+  font-size: 14px;
+}
+
+.player-row .who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Presence, not status: filled while the activity is open, hollow once it is
+   closed. It sits on the baseline with the name rather than centred, because the
+   row is baseline-aligned for the emoji grid. */
+.player-row .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  border: 1px solid var(--ink-dim);
+  transform: translateY(-1px);
+}
+
+.player-row.online .dot {
+  background: var(--win);
+  border-color: var(--win);
+}
+
+.player-row.me .who {
+  font-weight: 700;
+}
+
+/* The grid ends against the count column, so the last square a player scored is
+   the one that lines up with everyone else's. */
+.player-row .grid {
+  display: flex;
+  gap: 2px;
+  justify-self: end;
+}
+
+.player-row .cell {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid rgba(0, 0, 0, 0.35);
+}
+
+/* One weight and one colour for every score, finished or not: the count is a
+   tally beside the grid, and the grid already says how the game is going. */
+.player-row .score {
+  color: var(--ink-dim);
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.player-row .count {
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Giving up scores no count, so the text takes the count column with it. */
+.player-row .gave-up {
+  grid-column: span 2;
+  justify-self: end;
+}
+
+/* The group streak. Warm against the neutral chrome, because it is the one
+   number that belongs to everyone rather than to the player reading it. */
+#streak {
+  color: #f8c94a;
+  border-color: rgba(248, 201, 74, 0.35);
+}
+
+/* Practice is a different game, and the frame says so before the player has to
+   look at the status text. */
+#app.practice #vignette {
+  box-shadow: inset 0 0 0 2px rgba(88, 101, 242, 0.55);
+}
+
+#mode-toggle.on {
+  background: var(--accent);
+}
+
+/* The crimson end of the proximity ramp, so an armed hard mode reads as heat
+   rather than as the red the app uses for failure. The colour sits on the
+   switch instead of the whole pill, leaving the state legible without it. */
+#hard-toggle.on .switch-track {
+  background: #b81639;
+  box-shadow: inset 0 0 0 1px rgba(184, 22, 57, 0.7);
+}
+
+#hard-toggle.on {
+  border-color: rgba(184, 22, 57, 0.55);
+}
+
+.player-row .hard-badge {
+  margin-left: 5px;
+  font-size: 11px;
+}
+
+/* --- Entry ---------------------------------------------------------------- */
+
+#bottombar {
+  grid-row: 3;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+}
+
+#bottombar > * {
+  pointer-events: auto;
+}
+
+#entry {
+  position: relative;
+  flex: 1;
+  max-width: 420px;
+  display: flex;
+  gap: 8px;
+}
+
+#guess-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-solid);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  font: inherit;
+}
+
+#guess-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.button.primary {
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  padding: 10px 16px;
+}
+
+.button.subtle {
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  color: var(--ink-dim);
+}
+
+/* Suggestions open upward so the on-screen keyboard never covers them. The
+   second bound is what is left above the entry row once the keyboard has taken
+   its share, which on a phone in portrait is less than the first. */
+#suggestions {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: min(46vh, calc(100vh - var(--kb) - 110px));
+  overflow-y: auto;
+  list-style: none;
+  background: var(--surface-solid);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+
+#suggestions li {
+  padding: 9px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+#suggestions li[aria-selected="true"],
+#suggestions li:hover {
+  background: var(--accent);
+}
+
+/* --- Transient message ---------------------------------------------------- */
+
+#message {
+  position: absolute;
+  left: 50%;
+  bottom: calc(84px + var(--saib) + var(--kb));
+  transform: translateX(-50%);
+  background: var(--surface-solid);
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 14px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* --- Splash --------------------------------------------------------------- */
+
+#splash {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: #04141f;
+  transition: opacity 0.35s ease;
+  z-index: 10;
+}
+
+#splash.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+#splash-inner {
+  text-align: center;
+}
+
+#splash-globe {
+  font-size: 56px;
+  animation: spin 3.5s linear infinite;
+}
+
+#splash-text {
+  margin-top: 12px;
+  color: var(--ink-dim);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #splash-globe {
+    animation: none;
+  }
+
+  .switch-knob {
+    transition: none;
+  }
+}
+
+/* Narrow frames (phone portrait, picture-in-picture) drop the side panels to
+   half width and shrink the chrome so the map keeps most of the screen. */
+@media (max-width: 560px), (max-height: 420px) {
+  .panel {
+    max-width: 48vw;
+    font-size: 13px;
+  }
+
+  #giveup,
+  #practice-new {
+    padding: 10px;
+  }
+}

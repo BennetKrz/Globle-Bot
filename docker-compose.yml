@@ -1,22 +1,61 @@
-# Run the Globle bot on your Pi, headless, surviving reboots.
+# Run the Globle Activity, headless, surviving reboots.
 #
-#   docker compose up -d --build        # build + start in the background
-#   docker compose logs -f              # watch it connect ("Logged in as ...")
-#   docker compose run --rm bot npm run deploy   # register slash commands (run once)
-#   docker compose down                 # stop
+#   docker compose up -d --build     build and start
+#   docker compose logs -f app       watch it connect
+#   docker compose down              stop
+#
+# Registering commands (once, and again whenever they change):
+#   docker compose run --rm app npm run deploy
+#
+# The `tunnel` profile adds a cloudflared quick tunnel, which is how the
+# activity gets the public HTTPS address Discord requires. It is off by default
+# so a real deployment behind its own domain does not start one:
+#
+#   docker compose --profile tunnel up -d --build
+#   curl -s localhost:20241/quicktunnel
+#
+# That prints {"hostname":"something.trycloudflare.com"}. Paste the hostname,
+# without the scheme, into the Developer Portal under Activities -> URL
+# Mappings as the target of the "/" prefix. A quick tunnel gets a new hostname
+# every time it restarts, so the mapping has to be re-pasted after each restart.
 #
 # Secrets come from a .env file next to this file (copy .env.example).
 services:
-  bot:
-    build: .
-    image: globle-bot
-    container_name: globle-bot
+  app:
+    build:
+      context: .
+      args:
+        # Baked into the client bundle: the SDK needs it before the first
+        # request. Public, unlike CLIENT_SECRET.
+        VITE_DISCORD_CLIENT_ID: ${CLIENT_ID}
+    image: globle-activity
+    container_name: globle-activity
     restart: unless-stopped
     env_file: .env
+    environment:
+      PORT: "3000"
+    ports:
+      # Loopback only. Public access is the tunnel's job, so the server is not
+      # exposed on the network directly.
+      - "127.0.0.1:3000:3000"
     volumes:
-      # Named volume => player history persists across rebuilds.
+      # Named volume, so player history survives a rebuild.
       - globle-state:/data
-    # No `ports:` — the bot makes only outbound connections to Discord.
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    container_name: globle-tunnel
+    profiles: ["tunnel"]
+    # The image's entrypoint is already `cloudflared --no-autoupdate`, so this
+    # passes arguments only. The metrics server binds every interface because
+    # its default (localhost inside the container) is unreachable from outside;
+    # /quicktunnel then reports the generated hostname.
+    command: tunnel --metrics 0.0.0.0:20241 --url http://app:3000
+    ports:
+      - "127.0.0.1:20241:20241"
+    depends_on:
+      - app
+    restart: unless-stopped
 
 volumes:
   globle-state:

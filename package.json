@@ -1,20 +1,22 @@
 {
-  "name": "globle-discord-bot",
-  "version": "1.0.0",
-  "description": "A Discord bot to play Globle using the real daily globle-game.com answer.",
+  "name": "globle-discord-activity",
+  "version": "2.0.0",
+  "description": "A Discord Activity to play Globle on a fullscreen world map, using the real daily globle-game.com answer.",
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
-    "deploy": "node deploy-commands.js"
+    "deploy": "node deploy-commands.js",
+    "build": "npm --prefix client ci && npm --prefix client run build"
   },
   "license": "MIT",
   "dependencies": {
-    "@napi-rs/canvas": "^1.0.0",
-    "d3-geo": "^3.1.1",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@napi-rs/canvas": "^1.0.3",
+    "d3-interpolate": "^3.0.1",
     "d3-scale": "^4.0.2",
-    "d3-scale-chromatic": "^3.1.0",
     "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "express": "^5.1.0"
   }
 }

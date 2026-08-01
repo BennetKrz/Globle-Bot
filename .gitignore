@@ -1,4 +1,5 @@
 node_modules/
+client/dist/
 .env
 data/state.json
 data/state.json.tmp

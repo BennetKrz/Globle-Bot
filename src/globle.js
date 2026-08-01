@@ -17,6 +17,12 @@
  *
  *  3. A guess is coloured by that proximity using the same emoji bands the
  *     game uses for its shareable results (port of colour.ts).
+ *
+ * Countries carry a display name per supported language while keeping the
+ * dataset's English NAME as their identity: stored games and the answer index
+ * stay language-independent, so switching language relabels past guesses
+ * instead of invalidating them. Names in every supported language resolve on
+ * input regardless of the active language.
  */
 
 const crypto = require("crypto");
@@ -27,6 +33,7 @@ const path = require("path");
 
 const countryData = require(path.join(__dirname, "..", "data", "country_data.json"));
 const alternateNames = require(path.join(__dirname, "..", "data", "alternate_names.json"));
+const germanNames = require(path.join(__dirname, "..", "data", "german_names.json"));
 
 /** @type {Array<any>} GeoJSON features; index aligns with the server's answer index. */
 const FEATURES = countryData.features;
@@ -38,7 +45,7 @@ const ANSWER_KEY = "ee53e68c3074206a002bf01333b047d5";
 const ANSWER_HOST = "globle-game.com";
 
 /**
- * OpenSSL EVP_BytesToKey (MD5) — how CryptoJS derives key+IV from a passphrase
+ * OpenSSL EVP_BytesToKey (MD5): how CryptoJS derives key+IV from a passphrase
  * for "Salted__"-prefixed ciphertext. Produces 32-byte key + 16-byte IV.
  */
 function deriveKeyAndIv(passphrase, salt) {
@@ -188,6 +195,21 @@ function proximityEmoji(proximityMeters, isCorrect) {
 function stripDiacritics(s) {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
+/**
+ * German keyboards are frequently unavailable, so umlauts get typed out as
+ * digraphs. Stripping diacritics alone turns "Türkei" into "turkei", which
+ * never matches a typed "Tuerkei"; expanding first yields that second form.
+ */
+function expandUmlauts(s) {
+  return s
+    .replace(/ä/g, "ae")
+    .replace(/ö/g, "oe")
+    .replace(/ü/g, "ue")
+    .replace(/Ä/g, "Ae")
+    .replace(/Ö/g, "Oe")
+    .replace(/Ü/g, "Ue")
+    .replace(/[ßẞ]/g, "ss");
+}
 /** Lowercase, diacritic-free, punctuation -> single spaces. */
 function normalize(s) {
   return stripDiacritics(s).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -198,15 +220,33 @@ function compact(s) {
 }
 
 // Two-tier lookup: exact normalized first, then punctuation-insensitive "compact".
+// Both tiers hold the diacritic-stripped and the umlaut-expanded spelling.
 const NAME_LOOKUP = new Map();
 const COMPACT_LOOKUP = new Map();
 function addLookup(name, feature) {
   if (!name) return;
-  const n = normalize(name);
-  if (n && !NAME_LOOKUP.has(n)) NAME_LOOKUP.set(n, feature);
-  const c = compact(name);
-  if (c && !COMPACT_LOOKUP.has(c)) COMPACT_LOOKUP.set(c, feature);
+  for (const variant of [name, expandUmlauts(name)]) {
+    const n = normalize(variant);
+    if (n && !NAME_LOOKUP.has(n)) NAME_LOOKUP.set(n, feature);
+    const c = compact(variant);
+    if (c && !COMPACT_LOOKUP.has(c)) COMPACT_LOOKUP.set(c, feature);
+  }
 }
+/**
+ * The dataset's ISO_A2_EH for the United Kingdom is "GA", which is Gabon's code,
+ * and its ISO_A2 is the "-99" no-data marker. Registered as-is, "ga" resolves to
+ * whichever country is indexed first. Correcting the pair by hand keeps two-letter
+ * lookups working ("us", "de", "gb") instead of dropping them wholesale.
+ */
+const ISO_OVERRIDES = { "United Kingdom": ["GB"] };
+
+/** The usable two-letter codes for a feature; "-99" and other junk values are dropped. */
+function isoCodes(properties) {
+  const override = ISO_OVERRIDES[properties.NAME];
+  if (override) return override;
+  return [properties.ISO_A2, properties.ISO_A2_EH].filter((c) => /^[A-Z]{2}$/.test(String(c)));
+}
+
 for (const f of FEATURES) {
   const p = f.properties;
   addLookup(p.NAME, f);
@@ -215,8 +255,7 @@ for (const f of FEATURES) {
   addLookup(p.BRK_NAME, f);
   addLookup(p.ABBREV, f); // "U.S.A." -> compact "usa", "U.K." -> "uk"
   addLookup(p.POSTAL, f);
-  if (p.ISO_A2 && p.ISO_A2 !== "-99") addLookup(p.ISO_A2, f);
-  if (p.ISO_A2_EH && p.ISO_A2_EH !== "-99") addLookup(p.ISO_A2_EH, f);
+  for (const code of isoCodes(p)) addLookup(code, f);
 }
 // Aliases. The data is inconsistent about which of {real, alternative} is the
 // dataset's canonical NAME, so resolve whichever side matches and alias both.
@@ -230,31 +269,75 @@ for (const list of Object.values(alternateNames)) {
   }
 }
 
-/** Resolve a user-typed country name to a feature, or null. */
+/** Resolve a user-typed country name in any supported language to a feature, or null. */
 function findCountry(input) {
   if (!input) return null;
-  return NAME_LOOKUP.get(normalize(input)) || COMPACT_LOOKUP.get(compact(input)) || null;
-}
-
-// Exact-NAME -> feature map (for re-hydrating stored guesses into geometry).
-const FEATURE_BY_NAME = new Map(FEATURES.map((f) => [f.properties.NAME, f]));
-function featureByName(name) {
-  return FEATURE_BY_NAME.get(name) || null;
-}
-
-/** Up to `limit` country NAMEs matching a (partial) query, for autocomplete. */
-function searchCountries(query, limit = 25) {
-  const q = normalize(query || "");
-  const names = FEATURES.map((f) => f.properties.NAME);
-  if (!q) return names.slice(0, limit);
-  const starts = [];
-  const contains = [];
-  for (const name of names) {
-    const n = normalize(name);
-    if (n.startsWith(q)) starts.push(name);
-    else if (n.includes(q)) contains.push(name);
+  for (const variant of [input, expandUmlauts(input)]) {
+    const hit = NAME_LOOKUP.get(normalize(variant)) || COMPACT_LOOKUP.get(compact(variant));
+    if (hit) return hit;
   }
-  return starts.concat(contains).slice(0, limit);
+  return null;
+}
+
+// Exact-NAME -> feature map, for resolving the canonical names stored in a game.
+const FEATURE_BY_NAME = new Map(FEATURES.map((f) => [f.properties.NAME, f]));
+
+// --- Display languages ------------------------------------------------------
+
+const LANGUAGES = ["en", "de"];
+const DEFAULT_LANGUAGE = "en";
+
+/**
+ * Map a Discord locale ("de", "de-DE", …) to a supported language, falling back
+ * to English for anything unsupported.
+ */
+function normalizeLanguage(locale) {
+  const tag = String(locale || "").toLowerCase().split(/[-_]/)[0];
+  return LANGUAGES.includes(tag) ? tag : DEFAULT_LANGUAGE;
+}
+
+// Canonical English NAME -> German label. The dataset's own NAME_DE covers all
+// 197 countries; german_names.json only corrects the values that are wrong
+// (NAME_DE for Georgia is "Abchasien") or too long for a map label.
+const GERMAN_BY_NAME = new Map();
+for (const f of FEATURES) {
+  const p = f.properties;
+  const de = germanNames.overrides[p.NAME] || p.NAME_DE;
+  if (de) GERMAN_BY_NAME.set(p.NAME, de);
+}
+
+// Register every German spelling so a guess resolves whatever the active
+// language is: the dataset's NAME_DE, the override, and the hand-written aliases.
+for (const f of FEATURES) {
+  addLookup(f.properties.NAME_DE, f);
+  addLookup(GERMAN_BY_NAME.get(f.properties.NAME), f);
+}
+for (const [alias, canonical] of Object.entries(germanNames.aliases)) {
+  const target = FEATURE_BY_NAME.get(canonical);
+  if (target) addLookup(alias, target);
+  else console.warn(`german_names.json: alias "${alias}" points at unknown country "${canonical}"`);
+}
+
+/**
+ * The label for a country in the given language. Takes the dataset's canonical
+ * English NAME (what games store) and returns what a player should read.
+ */
+function displayName(name, lang = DEFAULT_LANGUAGE) {
+  if (normalizeLanguage(lang) === "de") return GERMAN_BY_NAME.get(name) || name;
+  return name;
+}
+
+/**
+ * The flag emoji for a canonical English NAME, or "" for a country the dataset
+ * gives no usable ISO code. A flag is two regional indicators, which is the code
+ * with each letter shifted into that block.
+ */
+function flagEmoji(name) {
+  const feature = FEATURE_BY_NAME.get(name);
+  if (!feature) return "";
+  const [code] = isoCodes(feature.properties);
+  if (!code) return "";
+  return String.fromCodePoint(...[...code].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
 }
 
 module.exports = {
@@ -264,7 +347,10 @@ module.exports = {
   polygonDistance,
   proximityEmoji,
   findCountry,
-  featureByName,
-  searchCountries,
+  displayName,
+  flagEmoji,
+  normalizeLanguage,
+  LANGUAGES,
+  DEFAULT_LANGUAGE,
   MAX_DISTANCE,
 };
