@@ -26,6 +26,8 @@ const { escapeMarkdown } = require("discord.js");
 
 const { t } = require("./i18n");
 const globle = require("./globle");
+const clock = require("./clock");
+const { padding } = require("./emoji");
 
 /** Discord renders `<@id>` as a mention, and pings the user if allowed_mentions permits it. */
 function mention(userId) {
@@ -103,6 +105,11 @@ async function announceFinish(client, { channelId, player, lang }) {
   ];
   // The mode is what the run is worth, so a hard run says so.
   if (player.hard) lines.push(t(lang, "announceHard"));
+  // No time here, although one was recorded. This message is about one player
+  // and lands while the day is still being played, so there is no order for a
+  // duration to explain yet -- only a number that would invite everyone still
+  // to come to race it. The clock is shown where it decides something, which is
+  // the summary, and only between the names it decided between.
   if (grid) lines.push(grid);
 
   return sendToChannel(client, channelId, {
@@ -117,7 +124,8 @@ async function announceFinish(client, { channelId, player, lang }) {
 
 /**
  * Discord rejects a message over 2000 characters. The summary is built to sit
- * under this instead, so a busy day loses its emoji grids rather than its post.
+ * under this instead, shedding decoration in order of what it can spare: first
+ * the column alignment, then the emoji grids, never the post.
  */
 const SUMMARY_LIMIT = 1900;
 
@@ -125,6 +133,16 @@ const SUMMARY_LIMIT = 1900;
 const SUMMARY_ROWS = 20;
 
 const MEDALS = ["🥇", "🥈", "🥉"];
+
+/**
+ * How many guesses a row's grid is padded out to, at most.
+ *
+ * Alignment is worth a wide column, but not an unbounded one: without a cap, one
+ * player who took twenty guesses pushes every name on the day twenty emoji to
+ * the right, which on a phone is off the screen. Past this, a grid simply runs
+ * long and its own name starts late -- everyone shorter still lines up.
+ */
+const ALIGN_WIDTH = 8;
 
 /**
  * The day, written out in the language the summary is posted in.
@@ -145,20 +163,42 @@ function dayLabel(date, lang) {
 }
 
 /**
- * One player's row.
+ * One player's row: a fixed-width marker, then the grid column, then the name.
+ *
+ * The grid comes before the name so that every grid starts at the same offset --
+ * one emoji plus one space into the line, on every row -- which is what puts each
+ * player's first guess under everyone else's. `width` then pads the short grids
+ * out so the names line up too; see emoji.js for why that padding is an emoji.
+ *
+ * The hard-mode marker rides with the name rather than the grid on purpose. It
+ * is an emoji, and an emoji inside the aligned column would widen that row's
+ * grid by one and undo the alignment it is sitting in.
  *
  * Names are escaped: a display name is whatever its owner typed, and an
  * unescaped `**` in one would take the rest of the message with it.
  */
-function summaryRow(player, place, lang, grids) {
+function summaryRow(player, place, lang, { grids, width, tied }) {
   const hard = player.hard ? " 🕶" : "";
   const who = `${escapeMarkdown(player.displayName)}${hard}`;
-  if (player.win) {
-    const grid = grids ? ` ${player.guesses.map((g) => g.emoji).join("")}` : "";
-    return `${MEDALS[place] || "🔹"} ${who} **${player.guessCount}**${grid}`;
-  }
-  if (player.finished) return `🏳️ ${t(lang, "summaryGaveUp", who, player.guessCount)}`;
-  return `⏳ ${t(lang, "summaryUnfinished", who, player.guessCount)}`;
+  const cells = grids && player.win ? player.guesses.map((g) => g.emoji) : [];
+  // A row with no grid still owes the column its full width, or its name would
+  // start left of everyone else's.
+  const column = cells.join("") + padding(width - cells.length);
+
+  // The clock, on the rows it separated and on no others: two names level on
+  // guesses are in the order they are in for a reason, and this is the reason.
+  // A tied row whose timeline the ranking refused prints none, so a time in this
+  // message is never one the placing did not come from.
+  const spent = tied.has(player.userId) ? clock.settled(player) : null;
+  const took = spent === null ? "" : ` · ${clock.format(spent)}`;
+
+  const [marker, text] = player.win
+    ? [MEDALS[place] || "🔹", `${who} **${player.guessCount}**${took}`]
+    : player.finished
+      ? ["🏳️", t(lang, "summaryGaveUp", who, player.guessCount)]
+      : ["⏳", t(lang, "summaryUnfinished", who, player.guessCount)];
+
+  return [marker, column, text].filter(Boolean).join(" ");
 }
 
 /**
@@ -174,8 +214,13 @@ function summaryRow(player, place, lang, grids) {
 function summaryLines({ date, answer, players, streak, lang }) {
   const winners = players.filter((p) => p.win);
   const listed = players.slice(0, SUMMARY_ROWS);
+  // Ties are read off the rows this message will actually carry. A player level
+  // on guesses with someone in another channel is not tied on this board, and a
+  // player level with someone who fell past SUMMARY_ROWS is not tied on it
+  // either -- there would be nothing above or below for the time to explain.
+  const tied = clock.contested(listed);
 
-  const build = (grids) => {
+  const build = (grids, width) => {
     const lines = [
       t(lang, "summaryTitle", dayLabel(date, lang)),
       t(lang, "summaryAnswer", globle.flagEmoji(answer), globle.displayName(answer, lang)),
@@ -183,7 +228,7 @@ function summaryLines({ date, answer, players, streak, lang }) {
     ];
     let place = 0;
     for (const player of listed) {
-      lines.push(summaryRow(player, player.win ? place++ : 0, lang, grids));
+      lines.push(summaryRow(player, player.win ? place++ : 0, lang, { grids, width, tied }));
     }
     if (players.length > listed.length) {
       lines.push(t(lang, "summaryMore", players.length - listed.length));
@@ -199,8 +244,22 @@ function summaryLines({ date, answer, players, streak, lang }) {
     return lines;
   };
 
-  const withGrids = build(true);
-  return withGrids.join("\n").length <= SUMMARY_LIMIT ? withGrids : build(false);
+  // Alignment is charged by the character: one invisible column is 26 of them,
+  // so a busy day can want more padding than a Discord message can hold. Give up
+  // the columns before the grids, and the grids before the post.
+  const longest = Math.max(0, ...listed.filter((p) => p.win).map((p) => p.guesses.length));
+  const tiers = [
+    { grids: true, width: Math.min(longest, ALIGN_WIDTH) },
+    { grids: true, width: 0 },
+    { grids: false, width: 0 },
+  ];
+
+  let lines;
+  for (const tier of tiers) {
+    lines = build(tier.grids, tier.width);
+    if (lines.join("\n").length <= SUMMARY_LIMIT) break;
+  }
+  return lines;
 }
 
 /**

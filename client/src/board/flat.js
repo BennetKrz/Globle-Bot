@@ -191,7 +191,13 @@ export function createFlatMap(canvas, countries) {
   let dragging = null;
 
   canvas.addEventListener("pointerdown", (event) => {
-    dragging = { x: event.clientX, y: event.clientY, at: performance.now(), moved: 0 };
+    dragging = {
+      x: event.clientX,
+      y: event.clientY,
+      at: performance.now(),
+      moved: 0,
+      touch: event.pointerType === "touch",
+    };
     canvas.setPointerCapture(event.pointerId);
   });
 
@@ -228,13 +234,18 @@ export function createFlatMap(canvas, countries) {
     draw();
   });
 
+  // As on the 3D board: a still press held past the tap window is a long press,
+  // which is what touch has instead of a Ctrl-click. A mouse held that long is
+  // neither a tap nor a long press, so it stays the no-op it always was.
   canvas.addEventListener("pointerup", (event) => {
     const drag = dragging;
     dragging = null;
     if (!drag || !selectHandler) return;
-    if (drag.moved > 6 || performance.now() - drag.at > 450) return;
+    if (drag.moved > 6) return;
+    const long = performance.now() - drag.at > 450;
+    if (long && !drag.touch) return;
     const name = at(event);
-    if (name) selectHandler(name);
+    if (name) selectHandler(name, { modified: long || event.ctrlKey || event.metaKey });
   });
 
   canvas.addEventListener("pointercancel", () => {
@@ -271,6 +282,7 @@ export function createFlatMap(canvas, countries) {
       hoverHandler = handler;
     },
 
+    /** Called with (countryName, {modified}) -- Ctrl, or Cmd on a Mac. */
     onSelect(handler) {
       selectHandler = handler;
     },

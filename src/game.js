@@ -20,6 +20,9 @@
  * its ranking, but only the closest guess sends the distance it scored, and the
  * withholding happens here rather than in the client for the same reason: what
  * the browser never receives, it cannot show.
+ *
+ * The daily is always hard, so every board on a date was played under the same
+ * rules and its guess counts compare. Practice is where the mode is a choice.
  */
 
 const crypto = require("crypto");
@@ -27,8 +30,9 @@ const crypto = require("crypto");
 const globle = require("./globle");
 const store = require("./store");
 const colour = require("./colour");
+const clock = require("./clock");
 
-const TZ = process.env.GLOBLE_TZ || "UTC";
+const TZ = process.env.GLOBLE_TZ || "Europe/Berlin";
 
 /** The date string whose answer is currently live, for every player. */
 function today() {
@@ -73,8 +77,21 @@ async function getAnswer(date) {
   return globle.FEATURES[index];
 }
 
+/**
+ * A player's daily record, always on hard.
+ *
+ * New records are created hard by the store. The flag is asserted again here
+ * because records written before the daily became hard-only are still in the
+ * state file, and a day half on each set of rules would have guess counts that
+ * do not compare.
+ */
 function getOrCreatePlayer(date, userId, displayName) {
-  return store.getOrCreatePlayer(date, userId, displayName);
+  const player = store.getOrCreatePlayer(date, userId, displayName);
+  if (!player.hard) {
+    player.hard = true;
+    store.touch();
+  }
+  return player;
 }
 
 /** Outcome codes returned to callers instead of thrown errors, so both layers can localise. */
@@ -92,13 +109,18 @@ const GUESS = {
  * The record is anything carrying `guesses`, `finished`, `win` and `guessCount`,
  * which is both a daily player and a practice game.
  *
- * @returns {{status: string, guess?: object, country?: string}}
+ * @returns {{status: string, guess?: object, country?: string, suggestion?: string|null}}
  */
 function applyGuess(record, answer, rawInput) {
   if (record.finished) return { status: GUESS.ALREADY_FINISHED };
 
   const feature = globle.findCountry(rawInput);
-  if (!feature) return { status: GUESS.UNKNOWN_COUNTRY };
+  // A name that resolved to nothing is usually a name that was mistyped, so the
+  // outcome carries the country it was probably reaching for. Nothing is scored
+  // on it: the correction travels back to the player as a question.
+  if (!feature) {
+    return { status: GUESS.UNKNOWN_COUNTRY, suggestion: globle.suggestCountry(rawInput) };
+  }
 
   const name = feature.properties.NAME;
   if (record.guesses.some((g) => g.name === name)) {
@@ -199,11 +221,17 @@ function setHard(record, hard) {
  *
  * Without `showDistance` the guess keeps everything except its metres, which is
  * the only thing a hard board withholds.
+ *
+ * `code` is the same country in two characters. The player's own board has room
+ * to spell a country out; a roster row is a strip of 12px squares and has room
+ * for nothing else, so the short form travels with the long one and each side
+ * uses the one that fits.
  */
 async function describeGuess(guess, lang, showDistance = true) {
   return {
     name: guess.name,
     label: globle.displayName(guess.name, lang),
+    code: globle.isoCode(guess.name),
     proximity: showDistance ? guess.proximity : null,
     emoji: guess.emoji,
     correct: !!guess.correct,
@@ -248,6 +276,17 @@ async function submitGuess(date, userId, displayName, rawInput) {
   const player = getOrCreatePlayer(date, userId, displayName);
   const answer = await getAnswer(date);
   const outcome = applyGuess(player, answer, rawInput);
+
+  // The clock runs from the first guess that scored to the one that ends the
+  // game. A name that was rejected -- unknown, or already on the board -- moved
+  // nothing, so it neither starts the clock nor counts as having been seen.
+  if (outcome.status === GUESS.OK || outcome.status === GUESS.WON) {
+    const at = Date.now();
+    clock.start(player, at);
+    clock.mark(player, at); // a guess is the strongest proof of presence there is
+    if (player.finished) clock.close(player, player.finishedAt);
+  }
+
   store.touch();
   return outcome;
 }
@@ -259,28 +298,75 @@ function giveUp(date, userId, displayName) {
   player.finished = true;
   player.win = false;
   player.finishedAt = Date.now();
+  // Surrendering stops the clock like winning does. A player who gave up without
+  // ever guessing has no clock to stop, and this quietly does nothing.
+  clock.close(player, player.finishedAt);
+  store.touch();
+  return true;
+}
+
+// --- The clock --------------------------------------------------------------
+
+/**
+ * The three things presence does to a player's clock.
+ *
+ * Each takes the date because the caller is the roster stream, which only ever
+ * knows about today, while the record being written belongs to whichever day it
+ * was opened on. Each is a no-op on a player who has not started or has already
+ * finished: a clock is only running between those two points, and there is no
+ * other state for these to reach.
+ *
+ * The moment is passed in rather than read here, so a pause can be backdated to
+ * when the player actually went away rather than to when it was noticed.
+ */
+function pausePlayer(date, userId, at = Date.now()) {
+  const player = store.getPlayer(date, userId);
+  if (!player || player.finished) return false;
+  if (!clock.close(player, at)) return false;
+  store.touch();
+  return true;
+}
+
+function resumePlayer(date, userId, at = Date.now()) {
+  const player = store.getPlayer(date, userId);
+  if (!player || player.finished) return false;
+  if (!clock.resume(player, at)) return false;
+  store.touch();
+  return true;
+}
+
+function markPlayerSeen(date, userId, at = Date.now()) {
+  const player = store.getPlayer(date, userId);
+  if (!player || player.finished) return false;
+  if (!clock.mark(player, at)) return false;
   store.touch();
   return true;
 }
 
 /**
- * Set the mode of a player's daily game. Returns false once it has started.
+ * Stop every clock still running on a date.
  *
- * The choice is also kept beside the player's language, where it becomes the
- * mode tomorrow's game is created in.
+ * A day that has rolled over has no live game left in it, so a segment still
+ * open belongs to a player who was mid-game when midnight arrived and is now
+ * playing a different day. Also the last thing the process does on its way out,
+ * where it closes at the moment it really stopped rather than leaving the mark
+ * on disk to be repaired on the next start.
  */
-function setDailyHard(date, userId, displayName, hard) {
-  const player = getOrCreatePlayer(date, userId, displayName);
-  if (!setHard(player, hard)) return false;
-  store.setHardDefault(userId, hard);
-  store.touch();
-  return true;
+function endDay(date, at = Date.now()) {
+  let changed = false;
+  for (const player of store.playersOn(date)) {
+    if (clock.close(player, at)) changed = true;
+  }
+  if (changed) store.touch();
+  return changed;
 }
 
 async function viewState(date, userId, displayName, lang) {
   const player = getOrCreatePlayer(date, userId, displayName);
   const answer = player.finished ? await getAnswer(date) : null;
-  return describeGame(player, answer, lang, { mode: "daily", date });
+  // Locked whatever the board looks like: hard is the daily's rule, not a
+  // setting an empty board is still waiting on.
+  return describeGame(player, answer, lang, { mode: "daily", date, hardLocked: true });
 }
 
 /**
@@ -292,9 +378,16 @@ async function viewState(date, userId, displayName, lang) {
  * of red points at no part of the map, so the live ones are safe to hand out.
  *
  * `revealBoards` upgrades a finished player's grid to their full guesses --
- * names, distances and fills -- and it is set only for a viewer who has finished
- * themselves, because the winning row names the answer. The line is drawn here
- * rather than in the client, which cannot hide what it was sent.
+ * names, codes, distances and fills -- and it is set only for a viewer who has
+ * finished themselves, because the winning row names the answer. The line is
+ * drawn here rather than in the client, which cannot hide what it was sent.
+ *
+ * Two orders meet in a row, and they are not the same one. The rows arrive
+ * ranked, from `store.playersOn`: winners by guess count, ties between them by
+ * the clock, then the give-ups, then whoever is still going. Within a row the
+ * squares stay in the order they were played in, unlike a board's own ranking --
+ * the squares are how the day went, and a run read left to right is the story
+ * of someone closing in.
  *
  * @param {object} opts
  * @param {boolean} opts.revealBoards  the viewer has finished and may see full boards
@@ -302,6 +395,11 @@ async function viewState(date, userId, displayName, lang) {
  */
 async function roster(date, lang, { revealBoards = false, online = new Set() } = {}) {
   const players = store.playersOn(date);
+  // Whose row the clock is actually deciding. Everyone else's time is left off
+  // the payload entirely rather than sent and hidden: the client cannot show
+  // what it was never given, and this is the one place the rule has to live.
+  const tied = clock.contested(players);
+
   return Promise.all(
     players.map(async (p) => ({
       userId: p.userId,
@@ -312,6 +410,12 @@ async function roster(date, lang, { revealBoards = false, online = new Set() } =
       hard: Boolean(p.hard),
       guessCount: p.guessCount,
       finishedAt: p.finishedAt,
+      // The time, on the rows a tie is being broken on and nowhere else. Null
+      // everywhere else, including a tied row whose timeline the ranking
+      // refused, so a duration on the panel is always the one that put the name
+      // beside it where it is. Nothing about a duration points at a country, so
+      // the rows that do carry one are safe to send to every viewer.
+      elapsedMs: tied.has(p.userId) ? clock.settled(p) : null,
       guesses:
         revealBoards && p.finished
           ? await Promise.all(p.guesses.map((g) => describeGuess(g, lang)))
@@ -389,7 +493,10 @@ module.exports = {
   getOrCreatePlayer,
   submitGuess,
   giveUp,
-  setDailyHard,
+  pausePlayer,
+  resumePlayer,
+  markPlayerSeen,
+  endDay,
   viewState,
   roster,
   describeGuess,
