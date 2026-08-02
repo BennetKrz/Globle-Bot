@@ -283,7 +283,19 @@ function createApp({ client, applicationId, clientSecret, botToken }) {
           : await game.submitGuess(date, req.session.userId, req.session.displayName, raw);
 
       if (outcome.status === game.GUESS.UNKNOWN_COUNTRY) {
-        return res.status(404).json({ error: "unknown_country", input: raw });
+        return res.status(404).json({
+          error: "unknown_country",
+          input: raw,
+          // The nearest spelling, when one is close enough to be worth asking
+          // about. Shaped like the duplicate reply below: the canonical name the
+          // day is scored against, and the label to put the question in.
+          suggestion: outcome.suggestion
+            ? {
+                country: outcome.suggestion,
+                label: globle.displayName(outcome.suggestion, lang),
+              }
+            : null,
+        });
       }
       if (outcome.status === game.GUESS.DUPLICATE) {
         return res.status(409).json({
@@ -331,27 +343,23 @@ function createApp({ client, applicationId, clientSecret, botToken }) {
   });
 
   /**
-   * Switch the player's game between hard and normal.
+   * Switch the player's practice game between hard and normal.
    *
-   * A game that already has a guess in it answers 409: the mode is settled by
-   * the first guess, so a player cannot turn off the hiding and read back every
-   * distance the game had been keeping from them. The choice carries into the
-   * games created after this one.
+   * The daily has no mode to set -- it is hard for everyone -- so it answers 409
+   * rather than quietly doing nothing. A practice game that already has a guess
+   * in it answers 409 too: the mode is settled by the first guess, so a player
+   * cannot turn off the hiding and read back every distance the game had been
+   * keeping from them. The choice carries into the games created after this one.
    */
   api.post("/hard", authenticate, async (req, res, next) => {
     try {
-      const mode = modeOf(req.body?.mode);
-      const hard = Boolean(req.body?.hard);
-
-      const changed =
-        mode === "practice"
-          ? game.setPracticeHard(req.session.userId, hard)
-          : game.setDailyHard(game.today(), req.session.userId, req.session.displayName, hard);
+      if (modeOf(req.body?.mode) !== "practice") {
+        return res.status(409).json({ error: "daily_is_hard" });
+      }
+      const changed = game.setPracticeHard(req.session.userId, Boolean(req.body?.hard));
       if (!changed) return res.status(409).json({ error: "game_started" });
 
-      // The roster marks who is playing hard, so everyone's copy is now stale.
-      if (mode === "daily") await events.publish(game.today());
-      res.json({ state: await stateFor(req, mode) });
+      res.json({ state: await stateFor(req, "practice") });
     } catch (e) {
       next(e);
     }

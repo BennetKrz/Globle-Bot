@@ -77,6 +77,12 @@ async function postSummary(client, date) {
 /** Whether the previous day is owed a summary, and post it if it is. */
 async function check(client) {
   const date = game.previousDay(game.today());
+  // A day that has rolled over has no live game left in it, so a clock still
+  // running on it belongs to someone who was mid-game at midnight and is on a
+  // different day now. Stopped ahead of the guard below, so the tidying happens
+  // on a day whose summary has already gone out; after the first pass there is
+  // nothing open and this costs a walk of the day's players.
+  game.endDay(date);
   if (store.summaryPosted(date)) return;
   try {
     await postSummary(client, date);

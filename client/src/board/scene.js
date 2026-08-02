@@ -25,6 +25,7 @@ import {
   PlaneGeometry,
   ReplaceStencilOp,
   Scene,
+  TOUCH,
   Vector3,
   WebGLRenderer,
 } from "three";
@@ -392,9 +393,11 @@ export function createScene(canvas, labelHost, countries) {
   // Orbiting it leaves the world at an arbitrary azimuth that neither view
   // corrects, and the labels and the plate walls both read as upright only from
   // square-on. The right button drives rotation by default, so it is unbound as
-  // well or a right-drag would still orbit.
+  // well or a right-drag would still orbit, and two fingers are given the pan
+  // half of their gesture rather than the rotate half being silently dropped.
   controls.enableRotate = false;
   controls.mouseButtons.RIGHT = null;
+  controls.touches.TWO = TOUCH.DOLLY_PAN;
 
   let view = "tilted";
   let transition = null;
@@ -441,11 +444,34 @@ export function createScene(canvas, labelHost, countries) {
     );
   }
 
-  /** Stop the world from being dragged out of the frame. */
-  function clampTarget() {
-    controls.target.x = clamp(controls.target.x, -BOARD_WIDTH / 2, BOARD_WIDTH / 2);
-    controls.target.z = clamp(controls.target.z, -BOARD_HEIGHT / 2, BOARD_HEIGHT / 2);
-    controls.target.y = 0;
+  /**
+   * Hold the camera square-on and over the world, once per frame.
+   *
+   * Both halves are the same job. The controls read the camera's angles out of
+   * where it sits relative to the target, so moving one without the other *is* a
+   * rotation -- and clamping the target alone was exactly that. A pan carried
+   * past the edge stopped the target at the border while the camera stayed where
+   * the drag had put it, and the gap opening between them swung the view off
+   * square with nothing having asked it to. So every correction made to the
+   * target is made to the camera as well, which leaves the angles untouched.
+   *
+   * Re-seating the camera on the view's own arc afterwards is the guarantee
+   * rather than the fix. A map is only ever read square-on, so whatever else
+   * reaches the camera -- a gesture that slips through, drift accumulated across
+   * an hour of frames -- survives a single frame at most. Only the distance is
+   * carried over, since the zoom is the one part of the framing that is the
+   * player's to set.
+   */
+  function holdCamera() {
+    const x = clamp(controls.target.x, -BOARD_WIDTH / 2, BOARD_WIDTH / 2);
+    const z = clamp(controls.target.z, -BOARD_HEIGHT / 2, BOARD_HEIGHT / 2);
+    camera.position.x += x - controls.target.x;
+    camera.position.y -= controls.target.y;
+    camera.position.z += z - controls.target.z;
+    controls.target.set(x, 0, z);
+
+    const radius = camera.position.distanceTo(controls.target);
+    camera.position.copy(positionFor(controls.target, radius, VIEWS[view].phi));
   }
 
   // --- Hover ----------------------------------------------------------------
@@ -592,19 +618,32 @@ export function createScene(canvas, labelHost, countries) {
   });
 
   // A tap counts as a selection only when it did not become a drag, so panning
-  // the map never picks a country.
+  // the map never picks a country. A touch has no Ctrl to hold, so holding the
+  // press itself stands in for the key: past the tap window a still finger is a
+  // long press, which is the touch spelling of a modified click. A mouse held
+  // that long is still nothing, because a mouse has the key.
   let pressed = null;
   canvas.addEventListener("pointerdown", (event) => {
-    pressed = { x: event.clientX, y: event.clientY, at: performance.now() };
+    pressed = {
+      x: event.clientX,
+      y: event.clientY,
+      at: performance.now(),
+      touch: event.pointerType === "touch",
+    };
   });
   canvas.addEventListener("pointerup", (event) => {
     if (!pressed || !selectHandler) return;
     const moved = Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y);
-    const elapsed = performance.now() - pressed.at;
+    const held = performance.now() - pressed.at;
+    const touch = pressed.touch;
     pressed = null;
-    if (moved > 6 || elapsed > 450) return;
+    if (moved > 6) return;
+    const long = held > 450;
+    if (long && !touch) return;
     const name = pick(event);
-    if (name) selectHandler(name);
+    // Whether the press asked for more than a tap travels with it; the board
+    // does not decide what a plain tap and a modified one mean, the game does.
+    if (name) selectHandler(name, { modified: long || event.ctrlKey || event.metaKey });
   });
   canvas.addEventListener("pointercancel", () => {
     pressed = null;
@@ -645,7 +684,10 @@ export function createScene(canvas, labelHost, countries) {
       moving = true;
       dirty = true;
     } else {
-      clampTarget();
+      // Before the update, not after: the update derives this frame's angles
+      // from where the camera and target were left, so the correction has to be
+      // in place by the time it looks.
+      holdCamera();
       // True for as long as the damping still has somewhere to carry the camera,
       // which is what keeps the loop alive after the player lets go.
       if (controls.update()) {
@@ -766,7 +808,10 @@ export function createScene(canvas, labelHost, countries) {
       hoverHandler = handler;
     },
 
-    /** Called with the country name when the map is tapped or clicked. */
+    /**
+     * Called with (countryName, {modified}) when the map is tapped or clicked.
+     * `modified` is true when Ctrl -- or Cmd, its Mac twin -- was held.
+     */
     onSelect(handler) {
       selectHandler = handler;
     },

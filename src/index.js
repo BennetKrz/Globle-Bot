@@ -16,6 +16,8 @@
 require("dotenv").config();
 
 const game = require("./game");
+const store = require("./store");
+const events = require("./events");
 const { createApp, listen } = require("./server");
 
 const PORT = Number(process.env.PORT || 3000);
@@ -42,10 +44,48 @@ async function connectToDiscord() {
     return null;
   }
   const { client, start } = require("./client");
-  await start(required("DISCORD_TOKEN"));
+  const token = required("DISCORD_TOKEN");
+  await start(token);
   console.log(`Globle ready as ${client.user.tag} (timezone: ${game.TZ})`);
   require("./launch").attach(client);
+  // The daily summary aligns its columns with an emoji that has to exist before
+  // it can be used. Awaited so the first summary of a fresh deploy already has
+  // it, but never fatal: a failure costs the columns, not the announcements.
+  await require("./emoji").ensurePadEmoji({
+    botToken: token,
+    applicationId: client.application?.id || process.env.CLIENT_ID,
+  });
   return client;
+}
+
+/**
+ * Stop on the signals a container stops with.
+ *
+ * A redeploy in the middle of the evening catches players mid-game, and their
+ * clocks are running when it lands. Closing them here stops them at the moment
+ * they really stopped; store.js repairs what a hard kill leaves behind, at the
+ * cost of a heartbeat, so this is the path that loses nothing.
+ *
+ * Everything in it is best-effort and none of it may keep the process alive:
+ * the timer is the promise that this exits whether or not the sockets agree.
+ */
+function stopOn(signals, server) {
+  let stopping = false;
+  const stop = (signal) => {
+    if (stopping) return;
+    stopping = true;
+    console.log(`${signal} received, shutting down.`);
+    try {
+      events.closeAll();
+      game.endDay(game.today());
+      store.flush();
+    } catch (e) {
+      console.error("Shutdown cleanup failed:", e);
+    }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  for (const signal of signals) process.on(signal, () => stop(signal));
 }
 
 async function main() {
@@ -59,7 +99,8 @@ async function main() {
     botToken: process.env.DISCORD_TOKEN || "",
   });
 
-  await listen(app, PORT);
+  const server = await listen(app, PORT);
+  stopOn(["SIGTERM", "SIGINT"], server);
   console.log(`Activity server listening on port ${PORT}`);
 }
 

@@ -41,7 +41,6 @@ const catalogueByName = new Map();
 function setCatalogue(countries) {
   catalogueByName.clear();
   for (const country of countries) catalogueByName.set(country.name, country);
-  ui.setCatalogue(countries);
 }
 
 /** The board's fill for every country the player has revealed. */
@@ -73,7 +72,14 @@ async function guess(country) {
     const result = await api.submitGuess(country, mode);
     apply(result.state);
   } catch (error) {
-    if (error.status === 404) return ui.message(t("unknownCountry", country));
+    // A name the server could not resolve usually came back with the country it
+    // was probably meant to be. It is named and nothing more: the guess is the
+    // player's to type, so the spelling is spelled out rather than filled in.
+    if (error.status === 404) {
+      const suggestion = error.body?.suggestion;
+      if (!suggestion) return ui.message(t("unknownCountry", country));
+      return ui.suggest(t("unknownCountry", country), t("didYouMean", suggestion.label));
+    }
     if (error.status === 409) return ui.message(t("duplicate", error.body.label || country));
     if (error.status === 401) return ui.message(t("sessionExpired"));
     console.error("Guess failed:", error);
@@ -111,12 +117,14 @@ async function toggleMode() {
 }
 
 /**
- * Switch the current game between hard and normal.
+ * Switch the current practice game between hard and normal.
  *
- * The server owns the rule that a started game keeps its mode, so a 409 is the
- * expected answer to a late press rather than a fault.
+ * The daily is hard by rule and hides the toggle, so this only ever runs on
+ * practice. The server owns the rule that a started game keeps its mode, so a
+ * 409 is the expected answer to a late press rather than a fault.
  */
 async function toggleHard() {
+  if (mode !== "practice") return;
   try {
     const result = await api.setHard(!state.hard, mode);
     apply(result.state);
@@ -198,19 +206,25 @@ async function toggleLanguage() {
 }
 
 function wireBoard() {
-  // Tapping a country fills the box instead of guessing outright: a misplaced
-  // tap on a crowded map should cost a correction, not a turn.
-  board.onSelect((name) => {
+  // Naming a country from its shape is the daily's whole question, so the daily
+  // never answers it: a tap there does nothing. Practice will answer it, and
+  // says the name over the map rather than into the box, so looking a country up
+  // stays a look rather than half a guess.
+  //
+  // Even in practice it takes asking twice over -- Ctrl-click, or a long press
+  // on touch. A plain tap is how the map is grabbed and panned, and an answer
+  // that falls out of an ordinary click is one the player reads by accident
+  // rather than asks for.
+  board.onSelect((name, { modified } = {}) => {
+    if (mode !== "practice" || !modified) return;
     const entry = catalogueByName.get(name);
-    const label = entry ? entry.label : name;
-    ui.message(label, 2400);
-    if (state?.finished) return;
-    ui.prefill(name, label);
+    ui.message(entry ? entry.label : name, 2400);
   });
-  // Hovering says only that the name is a tap away. Reading names off the map by
-  // sweeping the pointer across it would answer the question the box is asking.
+  // Hovering says only that the name is a tap away, and only where a tap says
+  // anything. Sweeping the pointer across the map would otherwise read the
+  // answer off it.
   board.onHover((label) => {
-    if (label) ui.message(t("revealHint"), 1200);
+    if (label && mode === "practice") ui.message(t("revealHint"), 1200);
   });
 }
 

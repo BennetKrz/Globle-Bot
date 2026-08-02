@@ -83,17 +83,32 @@ A hard game withholds them: every guess keeps its colour and its place in the ra
 closest one carries a distance.
 The board is otherwise the normal board, sorted the same way, so the number sits on the top row.
 
-The mode belongs to one game rather than to the player.
-It can be switched until the first guess lands, and is fixed after that, so a player cannot turn the
-hiding off and read back the distances the game had been keeping from them.
-The choice is remembered as the mode the next game starts in.
+**The daily is always hard.** It is the game's rule rather than a setting, so every board on a date
+was played under the same rules and its guess count compares against every other. The activity shows
+no switch for it, `POST /api/hard` refuses the daily, and a record written before the rule existed is
+brought up to it when it is next read.
+
+Practice is where the mode is a choice.
+It belongs to one game rather than to the player: it can be switched until the first guess lands, and
+is fixed after that, so a player cannot turn the hiding off and read back the distances the game had
+been keeping from them.
+The choice is remembered as the mode the next practice country starts in.
 
 The server never sends the distances a hard game hides, so there is no field the browser could read
 around the missing numbers.
 It also does the sorting, since a client cannot rank rows whose distances it was never given.
 Finishing gives every distance back, which is what keeps a hard game comparable with everyone
 else's in the roster.
-Roster rows mark the players who are playing hard.
+
+### The map answers nothing
+
+Naming a country from its shape is the question the daily asks, so the daily never answers it: the
+guess box does not complete what is typed into it, and tapping a country on the map does nothing.
+What is typed is sent as typed; the server owns the country names in both languages and resolves the
+aliases and spellings the client never sees.
+
+Practice may answer it. Tapping a country there says its name over the map for a moment, and leaves
+the box alone, so looking a country up stays a look rather than half a guess.
 
 ### Globle is a server game
 
@@ -148,7 +163,9 @@ The message is text only, with no attachment, so it reads the same on a phone, i
 images turned off and through a screen reader.
 
 A hard game is badged in the message, because a guess count only compares against the rules that
-produced it.
+produced it. Now that every daily is hard, the badge reads on every finish; the roster's own 🕶 marks
+do the same. It is the announcement saying which rules the count was scored under rather than
+distinguishing this run from another.
 
 ### The day's summary
 
@@ -172,6 +189,27 @@ that knew it are gone by then.
 It is written onto each player's record for the day as they play, which is also what splits a
 summary per channel when the same day was played in more than one.
 The language of each is whichever its players chose most.
+
+#### Why the columns line up
+
+Each row is the placing, then the grid, then the name, so every grid starts one emoji into the line
+and each player's first guess sits under everyone else's.
+Discord renders messages in a proportional font, so the short grids cannot be padded out to meet the
+names with spaces: `Alice` and `Bartholomew` are different widths and a space is narrower than
+either.
+What makes it work is that the gap is measured in emoji, and every emoji in a message renders at the
+same width, so it is always a whole number of them.
+
+There is no invisible character one emoji wide, so `src/emoji.js` uploads one: a 128×128 transparent
+PNG, kept as an *application* emoji so it works in every server without needing Use External Emoji.
+It is looked up by name on boot and uploaded only if missing, so restarts reuse it.
+
+Alignment is charged by the character — one invisible column is 26 of them — so a busy day can want
+more padding than a 2000-character message can hold.
+The summary sheds the columns first, then the grids, and never the post.
+Grids longer than eight guesses run past the column rather than widening it for everyone, which
+keeps the names on screen on a phone.
+If the emoji cannot be uploaded at all, rows come out ragged and nothing else changes.
 
 ## German
 
@@ -338,6 +376,7 @@ src/globle.js        Answer fetch and decrypt, distance, colour bands, name matc
 src/colour.js        The proximity colour ramp, single-sourced
 src/announce.js      Channel announcements. The only place that sends a message
 src/summary.js       The day's closing summary, and the rollover it waits for
+src/emoji.js         The transparent emoji the summary aligns its columns with
 src/client.js        Gateway client, and the DM lockdown
 src/launch.js        `/globle`, which opens the activity
 src/session.js       Activity session tokens

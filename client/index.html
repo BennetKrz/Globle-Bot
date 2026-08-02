@@ -20,6 +20,11 @@
       <div id="vignette"></div>
 
       <div id="hud">
+        <!-- On a narrow frame every control below the status pill moves into the
+             menu, and the panels move behind it. The controls are the same nodes
+             either way -- ui.js re-parents them rather than drawing a second set
+             -- so a listener, a disabled state or a hidden flag set anywhere else
+             holds across the move without knowing the move happened. -->
         <header id="topbar">
           <div id="status" class="pill"></div>
           <div id="streak" class="pill" hidden></div>
@@ -32,6 +37,27 @@
           <button id="mode-toggle" class="pill button" type="button"></button>
           <button id="view-toggle" class="pill button" type="button"></button>
           <button id="lang-toggle" class="pill button" type="button"></button>
+
+          <div id="menu-wrap" hidden>
+            <button
+              id="menu-toggle"
+              class="pill button"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              aria-controls="menu"
+            >
+              ☰
+            </button>
+            <div id="menu" hidden>
+              <div class="menu-group">
+                <button id="menu-guesses" class="button" type="button" aria-pressed="false"></button>
+                <button id="menu-players" class="button" type="button" aria-pressed="false"></button>
+              </div>
+              <div class="menu-group" id="menu-settings"></div>
+              <div class="menu-group" id="menu-actions"></div>
+            </div>
+          </div>
         </header>
 
         <section id="guesses" class="panel" hidden>
@@ -39,15 +65,22 @@
           <ol id="guess-list"></ol>
         </section>
 
+        <!-- The roster is three stacks, one row each per player. The names and
+             the counts sit outside the scroller and stay where they are; only
+             the middle stack moves, and because every run of squares lives in
+             that one container they all move together. -->
         <section id="players" class="panel" hidden>
           <h2 id="players-title"></h2>
-          <ol id="player-list"></ol>
+          <div id="roster">
+            <ol id="player-names"></ol>
+            <div id="player-runs" aria-hidden="true"><div id="player-runs-rows"></div></div>
+            <div id="player-scores" aria-hidden="true"></div>
+          </div>
         </section>
 
         <footer id="bottombar">
           <div id="entry">
             <input id="guess-input" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" />
-            <ul id="suggestions" hidden></ul>
             <button id="guess-submit" class="button primary" type="button"></button>
           </div>
           <button id="giveup" class="button subtle" type="button"></button>
@@ -56,6 +89,12 @@
 
         <div id="message" hidden></div>
       </div>
+
+      <!-- The name behind a roster square. It lives out here rather than beside
+           the squares because the run is a horizontal scroller and the panel
+           scrolls too, and a tooltip inside either would be clipped by it. Fixed
+           to the viewport and placed from the square's own rectangle instead. -->
+      <div id="cell-tip" role="tooltip" hidden></div>
 
       <div id="splash">
         <div id="splash-inner">

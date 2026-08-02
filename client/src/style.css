@@ -38,6 +38,14 @@
   box-sizing: border-box;
 }
 
+/* `hidden` is how everything in ui.js takes a control off the screen, and the
+   compact layout below hands some of those controls a `display` of their own.
+   The attribute wins over both, so a button the game has hidden stays hidden
+   wherever it has been re-parented to. */
+[hidden] {
+  display: none !important;
+}
+
 html,
 body,
 #app {
@@ -66,6 +74,10 @@ body {
   height: var(--frame, 100%);
   display: block;
   touch-action: none; /* the board handles its own pan and pinch */
+  /* A long press over the map is the touch reveal, so the webview must not
+     answer it with a callout or a selection magnifier of its own. */
+  -webkit-touch-callout: none;
+  user-select: none;
 }
 
 /* The board is lit from nowhere -- it is drawn, not rendered -- so the light on
@@ -139,9 +151,14 @@ body {
   pointer-events: auto;
 }
 
+/* Wrapping is the floor rather than the plan: below 560px the controls are in
+   the menu and the row is two pills long. It is what catches the frames between
+   that and a comfortable width, where the row is full but the menu has not taken
+   over yet -- a second line there, rather than a language pill off the edge. */
 #topbar {
   grid-row: 1;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   pointer-events: none;
@@ -266,6 +283,15 @@ body {
   justify-self: end;
 }
 
+/* Set by ui.js once the day's finished boards have opened up. The panel is
+   showing country codes now instead of blocks, which is roughly twice the run
+   for the same number of guesses, so it is given more of the frame to show them
+   in -- still a fraction of it, and still a scroller once a run outgrows even
+   this. */
+#players.revealed {
+  max-width: min(460px, 56vw);
+}
+
 .panel h2 {
   font-size: 12px;
   font-weight: 700;
@@ -318,36 +344,49 @@ body {
 }
 
 /* The roster. Everyone playing today is here, whether they have finished or not,
-   each with the grid their guesses have scored so far.
+   each with the run of squares their guesses have scored so far.
 
-   The panel is one grid rather than a stack of rows, so the guess grids and the
-   counts hold their columns however long a name runs or however many squares a
-   row has scored. Rows are `display: contents` and contribute four cells: name,
-   grid, count, unit. */
-#player-list {
+   A long day outgrows the panel, and the run is the only part of a row that
+   does, so the run is the only part that scrolls: names on the left and counts
+   on the right sit outside the scroll container and hold still, and the runs
+   move under them. All of them at once -- one container holds every run, so a
+   row can never come apart from the name it belongs to, and there is one
+   scrollbar for the roster rather than one per player.
+
+   That is why this is three stacks rather than the single grid of rows it reads
+   as: a scroll container has to hold whole elements. The rows line up because
+   all three stacks lay their players out on the same fixed row height, which is
+   also the line height, so nothing a name or a count does can shift them. */
+#roster {
+  --roster-row: 20px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto auto;
-  align-items: baseline;
-  column-gap: 6px;
-  row-gap: 3px;
-}
-
-.player-row {
-  display: contents;
+  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  column-gap: 8px;
   font-size: 14px;
+  line-height: var(--roster-row);
 }
 
-.player-row .who {
-  min-width: 0;
+#player-names,
+#player-runs-rows,
+#player-scores {
+  display: grid;
+  grid-auto-rows: var(--roster-row);
+  row-gap: 3px;
+  align-items: center;
+}
+
+/* The name column is capped rather than given a share, so it takes what it needs
+   from a roster of short names and never more than a fraction of the panel from
+   one long one. What is left over is the run's. */
+#player-names li {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 /* Presence, not status: filled while the activity is open, hollow once it is
-   closed. It sits on the baseline with the name rather than centred, because the
-   row is baseline-aligned for the emoji grid. */
-.player-row .dot {
+   closed. */
+#player-names .dot {
   display: inline-block;
   width: 7px;
   height: 7px;
@@ -357,48 +396,157 @@ body {
   transform: translateY(-1px);
 }
 
-.player-row.online .dot {
+#player-names li.online .dot {
   background: var(--win);
   border-color: var(--win);
 }
 
-.player-row.me .who {
+#player-names li.me {
   font-weight: 700;
 }
 
-/* The grid ends against the count column, so the last square a player scored is
-   the one that lines up with everyone else's. */
-.player-row .grid {
-  display: flex;
-  gap: 2px;
-  justify-self: end;
+/* The day's rule, next to the roster's heading. Hard is how the daily is played
+   by everyone, so it belongs to the panel and not to any of its rows: as a badge
+   per name it was a mark that never varied, and a mark that never varies is read
+   once and then stops being read at all.
+
+   Set apart from the heading rather than continuing it -- the heading names the
+   list, this names the terms it was played on. */
+#players-title .mode-badge {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--edge);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
 }
 
-.player-row .cell {
+/* The opposite mark, on the rare row that did not play the day's rule. Tinted
+   like the give-up colour: it is not a worse score, it is a score the column it
+   is sitting in cannot be compared against. */
+#player-names .soft-badge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: rgba(237, 66, 69, 0.16);
+  color: var(--lose);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* The scroller. `overscroll-behavior` keeps a swipe that runs out of squares
+   from carrying on into whatever is behind the panel. */
+#player-runs {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+/* As wide as the longest run, but never narrower than the column it sits in, so
+   a day that fits still ends against the counts. Runs are aligned to that end:
+   the newest square of every row is the one that lines up, and the empty space
+   a short run leaves at the other end is the head start it has not played. */
+#player-runs-rows {
+  width: max-content;
+  min-width: 100%;
+  justify-items: end;
+}
+
+#player-runs .run {
+  display: flex;
+  gap: 2px;
+}
+
+#player-runs .cell {
+  flex: none;
   width: 12px;
   height: 12px;
   border-radius: 3px;
   border: 1px solid rgba(0, 0, 0, 0.35);
 }
 
+/* A square whose country the viewer has earned carries that country's two-letter
+   code. It grows sideways and a little taller, but not past the row: the three
+   stacks line up only because every player takes exactly one 20px row in each,
+   and a square that pushed its row open would put every name below it against
+   the wrong run. 14px in a 20px row stays inside that.
+
+   The code rather than the name, because the panel is a few squares wide and a
+   name is not; and the code rather than a flag, because the flag for a code is
+   two regional indicators and Windows has no glyph for them -- Discord draws the
+   flags in its own messages through Twemoji, but the activity is an ordinary web
+   page and would render "DE" in the emoji font, unstyled and out of line. This
+   way the letters are the same everywhere and the colour is still the distance. */
+#player-runs .cell.named {
+  width: auto;
+  min-width: 19px;
+  height: 14px;
+  padding: 0 2px;
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 12px;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+/* The count, its unit and the clock keep their own columns so a "Tipp" cannot
+   sit a character to the left of the "Tipps" above it. The stack gives way
+   before the runs do: it is the widest thing on the row that nobody needs in
+   full, so on a frame too narrow for all three columns it is what gets cut. */
+#player-scores {
+  grid-template-columns: auto auto auto;
+  column-gap: 0;
+  min-width: 0;
+}
+
+/* The separation is carried by the cells rather than by the grid, because the
+   clock column is empty on every row of a day nobody tied on. A column gap is
+   charged whether or not the track it precedes has anything in it, and would
+   hold four pixels open down the edge of most rosters for a cell that is not
+   there. A margin on an empty span costs nothing. */
+#player-scores .unit,
+#player-scores .time:not(:empty) {
+  margin-left: 4px;
+}
+
 /* One weight and one colour for every score, finished or not: the count is a
-   tally beside the grid, and the grid already says how the game is going. */
-.player-row .score {
+   tally beside the run, and the run already says how the game is going. */
+#player-scores .score {
   color: var(--ink-dim);
   font-size: 13px;
   font-weight: 700;
   white-space: nowrap;
 }
 
-.player-row .count {
+#player-scores .count {
   justify-self: end;
   font-variant-numeric: tabular-nums;
 }
 
-/* Giving up scores no count, so the text takes the count column with it. */
-.player-row .gave-up {
-  grid-column: span 2;
+/* The clock, quieter than the count it sits behind. It answers a question only
+   a tie asks, so it reads as a footnote to the score rather than as a second
+   one. Digits are tabular for the same reason the count's are: a column of
+   times that jitters is a column nobody can compare down. */
+#player-scores .time {
   justify-self: end;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  opacity: 0.65;
+}
+
+/* Giving up scores no count, so the text takes the count column with it. It is
+   also the one score long enough to crowd a phone-sized panel out of its other
+   two columns, so it is allowed to run short there rather than push them off. */
+#player-scores .gave-up {
+  grid-column: 1 / -1;
+  justify-self: end;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* The group streak. Warm against the neutral chrome, because it is the one
@@ -430,11 +578,6 @@ body {
   border-color: rgba(184, 22, 57, 0.55);
 }
 
-.player-row .hard-badge {
-  margin-left: 5px;
-  font-size: 11px;
-}
-
 /* --- Entry ---------------------------------------------------------------- */
 
 #bottombar {
@@ -450,7 +593,6 @@ body {
 }
 
 #entry {
-  position: relative;
   flex: 1;
   max-width: 420px;
   display: flex;
@@ -488,34 +630,6 @@ body {
   color: var(--ink-dim);
 }
 
-/* Suggestions open upward so the on-screen keyboard never covers them. The
-   second bound is what is left above the entry row once the keyboard has taken
-   its share, which on a phone in portrait is less than the first. */
-#suggestions {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  max-height: min(46vh, calc(100vh - var(--kb) - 110px));
-  overflow-y: auto;
-  list-style: none;
-  background: var(--surface-solid);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
-}
-
-#suggestions li {
-  padding: 9px 12px;
-  cursor: pointer;
-  font-size: 14px;
-}
-
-#suggestions li[aria-selected="true"],
-#suggestions li:hover {
-  background: var(--accent);
-}
-
 /* --- Transient message ---------------------------------------------------- */
 
 #message {
@@ -530,6 +644,29 @@ body {
   font-size: 14px;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* A message that names the country a misspelling probably meant runs to two
+   sentences, so it drops the pill shape for a card the second one may wrap
+   inside. It stays as unpressable as every other message: the name is there to
+   be read and typed, not tapped. */
+#message.suggestion {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  max-width: min(80vw, 340px);
+  border-radius: var(--radius);
+  white-space: normal;
+  text-align: center;
+}
+
+#message .message-text {
+  color: var(--ink-dim);
+}
+
+#message .message-question {
+  font-weight: 600;
 }
 
 /* --- Splash --------------------------------------------------------------- */
@@ -563,6 +700,31 @@ body {
   color: var(--ink-dim);
 }
 
+/* The name behind a roster square, placed by ui.js from that square's rectangle.
+   Fixed to the viewport so neither the run's scroller nor the panel can clip it,
+   under the splash but over the panels, and never a pointer target: it appears
+   under the cursor that summoned it, and one that swallowed a press would take
+   the press meant for the square. Opaque rather than the panels' translucency --
+   it sits on top of one of them and has to stay readable over its text. */
+#cell-tip {
+  position: fixed;
+  z-index: 9;
+  pointer-events: none;
+  padding: 4px 8px;
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--surface-solid);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  /* Wraps rather than runs off the side. "Democratic Republic of the Congo" plus
+     a distance is wider than a phone in portrait, and there is no narrower way
+     to say it. */
+  max-width: calc(100vw - 16px);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -587,8 +749,207 @@ body {
     font-size: 13px;
   }
 
+  /* Half of a phone is not enough for three columns while one of them spells out
+     "Tipps" on every row. The word goes and the number stays: the panel is
+     headed with what is being counted, and the label a screen reader reads is
+     built from the full string either way. What that frees goes to the names,
+     which are the part of a row this panel is for; the runs keep enough for a
+     couple of squares and scroll for the rest, as they do at any width. */
+  #roster {
+    font-size: 13px;
+    grid-template-columns: fit-content(50%) minmax(36px, 1fr) minmax(0, auto);
+    column-gap: 6px;
+  }
+
+  /* Emptied rather than removed: a unit taken out of the grid would leave the
+     counts to pack two to a row and every score would land beside the wrong
+     name. Its margin goes with its width, or the gap it was holding open would
+     outlive the word it was holding it open for. */
+  #player-scores .unit {
+    width: 0;
+    margin-left: 0;
+    overflow: hidden;
+  }
+
+  /* The clock stays where the unit went: unlike the unit it is not already
+     obvious from the rest of the row, and it is only ever on screen at all
+     where it is the reason two names are in the order they are in. */
+  #player-scores .time:not(:empty) {
+    margin-left: 5px;
+  }
+
   #giveup,
   #practice-new {
     padding: 10px;
   }
+}
+
+/* --- The menu ------------------------------------------------------------- */
+
+/*
+ * A phone in portrait cannot hold a status line, four toggles and a give-up
+ * button on one row, and the two panels between them leave the map a strip down
+ * the middle. So on a narrow frame all of that goes behind one button: the
+ * controls move into a dropdown, and the panels become sheets it opens.
+ *
+ * `#app.compact` rather than a media query, because the controls are re-parented
+ * and only JS can do that. ui.js sets the class off a `matchMedia` on the same
+ * query the block above uses, so the two agree by construction.
+ *
+ * This section sits after the toggles' own colours on purpose. `#menu .button`
+ * ties with `#mode-toggle.on` and the rest on specificity, and being last is
+ * what lets the menu's flat rows win: a pill's shape and its accent belong to
+ * the topbar, not to a list.
+ */
+
+#menu-wrap {
+  position: relative;
+}
+
+#menu-toggle {
+  font-size: 15px;
+  line-height: 1;
+  padding: 8px 12px;
+}
+
+#menu-toggle[aria-expanded="true"] {
+  background: rgba(60, 62, 68, 0.9);
+}
+
+/* Hung off the button rather than placed from the frame, so it follows the
+   topbar down when the row wraps. Above the panels -- it opens over them --
+   and below the tooltip and the splash, which are the only things over it. */
+#menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: max-content;
+  min-width: 200px;
+  /* The insets are in here because the frame this has to stay inside is the safe
+     one, not the viewport: a phone in landscape is short enough to be compact
+     and notched enough for the difference to be the menu's left edge. */
+  max-width: calc(100vw - var(--sail) - var(--sair) - 20px);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  scrollbar-width: thin;
+}
+
+.menu-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Carried by the group rather than by a rule between groups: which groups have
+   anything in them changes with the game -- practice adds two rows, a finished
+   board takes one away -- and a divider that sat between two elements would
+   still be drawn when everything after it was hidden. ui.js marks the groups it
+   found something in, so the line is only ever under a row that exists. */
+.menu-group.divided {
+  margin-top: 3px;
+  padding-top: 6px;
+  border-top: 1px solid var(--edge);
+}
+
+/* One row shape for every control in here, whatever it looks like in the bar it
+   came from. The label goes left and anything the control carries -- the hard
+   switch is the only one -- goes right against the edge. */
+#menu .button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 9px 11px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  backdrop-filter: none;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: left;
+  white-space: nowrap;
+}
+
+#menu .button:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* A panel's row reads as a switch for that panel, so it stays lit while the
+   panel it opened is on screen -- through a hover, which is why the menu is
+   named twice here. Only these two rows: the hard toggle is also a pressed
+   control, and it says so with the switch it carries. */
+#menu #menu-guesses[aria-pressed="true"],
+#menu #menu-players[aria-pressed="true"] {
+  background: rgba(88, 101, 242, 0.22);
+}
+
+#menu #dev-reset {
+  color: var(--lose);
+}
+
+#menu .button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+#menu .button:disabled:hover {
+  background: transparent;
+}
+
+/* --- Compact frames ------------------------------------------------------- */
+
+/* The row is a status and a menu button here, so it has no reason to wrap and a
+   reason not to: wrapping is decided before shrinking, so a long status would
+   push the menu button onto a line of its own rather than give way to it. It
+   gives way instead, below. */
+#app.compact #topbar {
+  flex-wrap: nowrap;
+}
+
+#app.compact #status {
+  /* A won game names the country and the count, which is wider than a phone.
+     Cut rather than wrapped: the pill is a glance, and the sentence it is
+     cutting is also on the board. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Off screen until the menu opens one, and then the width of the frame: the map
+   is behind it either way, and a panel worth opening is worth reading. Only one
+   is ever open -- they share a grid cell, and ui.js closes the other. */
+#app.compact .panel {
+  display: none;
+  justify-self: stretch;
+  width: 100%;
+  max-width: none;
+}
+
+#app.compact .panel.open {
+  display: block;
+}
+
+/* The panel has the width now, so the roster gets its columns back: the count's
+   unit is spelled out again and the names keep their share. */
+#app.compact #roster {
+  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  column-gap: 8px;
+}
+
+#app.compact #player-scores .unit {
+  width: auto;
+  margin-left: 4px;
+  overflow: visible;
 }

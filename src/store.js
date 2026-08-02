@@ -13,6 +13,7 @@
  *         "<userId>": {
  *           userId, displayName, guesses: [{ name, proximity, emoji, correct }],
  *           finished: bool, win: bool, guessCount, finishedAt, hard: bool,
+ *           play: [{ start, end, seen? }],
  *           channelId: string | undefined
  *         }
  *       }
@@ -29,7 +30,8 @@
  *
  * Every game carries its own `hard`, because the mode is fixed at the moment its
  * first guess lands and a later change must not reach a game already played. The
- * flag beside the language is only the value a new game starts with.
+ * daily is created hard and stays that way; the flag beside the language is only
+ * the mode the next practice game starts in.
  *
  * Guesses store the dataset's canonical English country NAME, never a localised
  * label, so a player switching language keeps their history.
@@ -37,10 +39,16 @@
  * A practice game sits beside the language choice rather than under a date. It
  * belongs to no day, so nothing that reads `byDate` -- the live roster, the
  * day's results, the group streak -- can ever pick one up.
+ *
+ * `play` is the daily's clock, as the stretches it was being played rather than
+ * as a duration; see clock.js. Records written before it existed simply do not
+ * have it, which is why nothing here treats its absence as an error.
  */
 
 const fs = require("fs");
 const path = require("path");
+
+const clock = require("./clock");
 
 /**
  * Where to persist the writable game state. On ephemeral hosts (Railway, Fly,
@@ -76,8 +84,47 @@ function load() {
     state = { byDate: {}, users: {} };
   }
   console.log(`Globle state file: ${FILE}`);
+  repairClocks();
 }
-load();
+
+/**
+ * Close every clock a crash left running.
+ *
+ * A segment with no end means "being played right now", which is only true
+ * while the process that wrote it is alive. Read back after a restart it is a
+ * lie, and an uncorrected one would show as a game that has been in progress
+ * since the moment the process died. Each is closed at the last mark it carries,
+ * so an unclean exit costs one heartbeat of one player's time.
+ *
+ * Wrapped in its own try, because a state file too broken to walk must still
+ * boot the bot. Whatever survives unrepaired is refused by `clock.settled` when
+ * the ranking asks, which reaches the same outcome by the other door.
+ */
+function repairClocks() {
+  try {
+    const now = Date.now();
+    let changed = false;
+    for (const day of Object.values(state.byDate)) {
+      for (const player of Object.values(day?.players || {})) {
+        if (clock.repair(player, now)) changed = true;
+      }
+    }
+    if (changed) save();
+  } catch (e) {
+    console.error("Could not repair play timelines:", e.message);
+  }
+}
+
+/** The atomic write itself. Both the debounced path and the shutdown path use it. */
+function writeState() {
+  try {
+    const tmp = FILE + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, FILE);
+  } catch (e) {
+    console.error("Failed to save state:", e);
+  }
+}
 
 let saveTimer = null;
 function save() {
@@ -85,15 +132,25 @@ function save() {
   if (saveTimer) return;
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    try {
-      const tmp = FILE + ".tmp";
-      fs.writeFileSync(tmp, JSON.stringify(state));
-      fs.renameSync(tmp, FILE);
-    } catch (e) {
-      console.error("Failed to save state:", e);
-    }
+    writeState();
   }, 250);
 }
+
+/**
+ * Write now instead of in a quarter of a second. Used on the way out, where the
+ * debounce is a timer that will never get to fire.
+ */
+function flush() {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  writeState();
+}
+
+// Read the file only once the writer above exists: the repair pass load() ends
+// with is the first thing in this module that can want to save.
+load();
 
 /** The stored day, or null. Reading a date never brings it into existence. */
 function peekDay(date) {
@@ -131,7 +188,8 @@ function getOrCreatePlayer(date, userId, displayName) {
       win: false,
       guessCount: 0,
       finishedAt: null,
-      hard: getHardDefault(userId),
+      hard: true, // the daily is hard for everyone; see game.js
+      play: [], // empty until the first guess starts the clock; see clock.js
     };
   } else if (displayName) {
     day.players[userId].displayName = displayName; // keep name fresh
@@ -141,11 +199,30 @@ function getOrCreatePlayer(date, userId, displayName) {
 }
 
 /**
+ * The play time a tie is decided on, or Infinity for a record that has none.
+ *
+ * Infinity rather than zero, because "no time recorded" must not beat every
+ * time that was. Games played before the clock existed have no timeline at all,
+ * and a timeline nobody closed is refused by clock.settled; both of them lose
+ * the tiebreak and fall through to the next one instead of winning it outright.
+ */
+function timeOf(player) {
+  const ms = clock.settled(player);
+  return ms === null ? Infinity : ms;
+}
+
+/**
  * Everyone who has touched a date, finished or not.
  *
  * Sorted the way the roster reads: finishers first (winners by guess count,
- * then the order they finished in), and players still going after them, furthest
- * along first.
+ * then by how long they took, then the order they finished in), and players
+ * still going after them, furthest along first.
+ *
+ * Time breaks the tie rather than settling the whole order: two players who
+ * found it in four guesses played the same game, and the faster of the two is
+ * the only thing left to separate them by. Comparison rather than subtraction,
+ * because two untimed records are both Infinity and their difference is NaN,
+ * which is not an answer a comparator may give.
  */
 function playersOn(date) {
   const day = peekDay(date);
@@ -155,6 +232,8 @@ function playersOn(date) {
     if (a.finished) {
       if (a.win !== b.win) return a.win ? -1 : 1;
       if (a.guessCount !== b.guessCount) return a.guessCount - b.guessCount;
+      const [ta, tb] = [timeOf(a), timeOf(b)];
+      if (ta !== tb) return ta < tb ? -1 : 1;
       return (a.finishedAt || 0) - (b.finishedAt || 0);
     }
     if (a.guessCount !== b.guessCount) return b.guessCount - a.guessCount;
@@ -281,11 +360,12 @@ function setLanguage(userId, language) {
 }
 
 /**
- * The mode a user's next game starts in.
+ * The mode a user's next practice game starts in. The daily has no choice to
+ * remember: it is hard for everyone.
  *
  * Hard mode locks once a game has a guess in it, so without a remembered choice
- * a player would have to reach for the toggle before every daily, and lose the
- * mode outright by guessing first.
+ * a player would have to reach for the toggle before every new country, and lose
+ * the mode outright by guessing first.
  */
 function getHardDefault(userId) {
   return state.users[userId]?.hard === true;
@@ -333,4 +413,5 @@ module.exports = {
   getPractice,
   setPractice,
   touch,
+  flush,
 };
