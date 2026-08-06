@@ -100,10 +100,16 @@ body {
 
 /* Country names on the 3D board are HTML rather than generated text geometry:
    crisp at any zoom, no font parser in the bundle, no CDN request to be
-   blocked. The layer tracks the canvas and never intercepts a pointer. */
+   blocked. The layer tracks the canvas and never intercepts a pointer.
+
+   It is appended by the board, which makes it the last child of #app and would
+   otherwise put a name on the map over the panels and the pills. The z-index
+   here and the one on the HUD put it back where it belongs: over the canvas,
+   under everything the player reads. */
 .label-layer {
   position: absolute;
   inset: 0;
+  z-index: 0;
   pointer-events: none;
   overflow: hidden;
 }
@@ -138,6 +144,9 @@ body {
 #hud {
   position: absolute;
   inset: 0;
+  /* Over the map and its labels. The splash and the roster tooltip are the only
+     things above this, and both are siblings carrying a higher one. */
+  z-index: 1;
   display: grid;
   grid-template-rows: auto 1fr auto;
   grid-template-columns: minmax(0, 1fr);
@@ -952,4 +961,28 @@ body {
   width: auto;
   margin-left: 4px;
   overflow: visible;
+}
+
+/* --- The give-up button, asking ------------------------------------------- */
+
+/* Pressed once, the button holds the question for a few seconds. It is the same
+   node in the bottom bar and in the menu, so this sits after both of their rules
+   -- `#menu .button` ties with it on specificity and would otherwise put the
+   row's flat colours back over the warning.
+
+   Dimmed grey to the game's red is the whole of the change: the label has
+   already said what the second press does, and a button that also moved or grew
+   would shift what is under the finger that is about to press it. The outline is
+   an inset shadow for that last reason -- the menu's rows have no border, and
+   one added here would grow the row the press is standing on. */
+#giveup.armed,
+#menu #giveup.armed {
+  background: rgba(237, 66, 69, 0.16);
+  box-shadow: inset 0 0 0 1px rgba(237, 66, 69, 0.55);
+  color: var(--lose);
+}
+
+#giveup.armed:hover,
+#menu #giveup.armed:hover {
+  background: rgba(237, 66, 69, 0.26);
 }

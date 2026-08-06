@@ -132,6 +132,7 @@ export function createUi(handlers) {
 
   let messageTimer = null;
   let tipTimer = null;
+  let giveUpTimer = null;
 
   let selfId = null;
   let mode = "daily";
@@ -150,22 +151,143 @@ export function createUi(handlers) {
 
   // --- Guess entry ----------------------------------------------------------
 
+  /*
+   * What has been typed into the box, newest first, and where the arrows have
+   * walked in it.
+   *
+   * A shell's history rather than a completion list: it only ever hands back a
+   * line the player wrote themselves, so the box still does not name a country
+   * for them. What it is for is the line that came back "not a country I know" --
+   * that spelling is gone the moment it is sent, and retyping it to change one
+   * letter is the tax on a typo.
+   *
+   * `historyAt` of -1 is the line being typed rather than one recalled, and the
+   * draft it was is held so walking back down returns it. Every guess is kept,
+   * scored or not, because a rejected one is the one most likely to be wanted.
+   */
+  const history = [];
+  let historyAt = -1;
+  let draft = "";
+
+  /** Show one line of the history, or the draft at -1, caret after it. */
+  function recall(index) {
+    if (historyAt === -1) draft = elements.input.value;
+    historyAt = index;
+    const line = index === -1 ? draft : history[index];
+    elements.input.value = line;
+    const end = line.length;
+    elements.input.setSelectionRange(end, end);
+  }
+
   /** Send the box as typed. The server resolves names in either language. */
   function submitTyped() {
     const typed = elements.input.value.trim();
     if (!typed) return;
+    if (history[0] !== typed) history.unshift(typed);
+    historyAt = -1;
+    draft = "";
     elements.input.value = "";
     handlers.onGuess(typed);
   }
 
   elements.input.addEventListener("keydown", (event) => {
-    if (event.key !== "Enter") return;
+    // Typing is an answer to the give-up button's question, and the answer is no.
+    if (giveUpArmed) disarmGiveUp();
+
+    if (event.key === "Enter") {
+      event.preventDefault();
+      return submitTyped();
+    }
+    // The ends of the history are left to the browser: at the newest end the key
+    // is the caret's, which is what a player pressing it in a line they are
+    // editing meant by it.
+    if (event.key === "ArrowUp" && historyAt + 1 < history.length) {
+      event.preventDefault();
+      recall(historyAt + 1);
+    } else if (event.key === "ArrowDown" && historyAt > -1) {
+      event.preventDefault();
+      recall(historyAt - 1);
+    }
+  });
+
+  /** Whether a node is something the player is already typing into. */
+  const typesInto = (node) =>
+    Boolean(node) &&
+    (node.isContentEditable || node.tagName === "INPUT" || node.tagName === "TEXTAREA");
+
+  /*
+   * A character typed anywhere goes into the box.
+   *
+   * The map is the whole screen and the box is one strip along the bottom of it,
+   * and everything a player does between two guesses -- dragging the map,
+   * opening the menu, reading a panel -- takes the focus out of it. Typing the
+   * next country is then a keystroke that lands nowhere, and the player finds
+   * out by looking at an empty box a word later.
+   *
+   * The character is written here rather than left to the browser: the focus
+   * moves during the keydown, and whether the keystroke follows it into the new
+   * element is not something every engine agrees on. It is appended, because a
+   * half-typed name in the box is a name the player is still writing.
+   *
+   * Nothing else about the key is second-guessed. A shortcut, a key pressed
+   * mid-composition and everything that is not a character all pass through, and
+   * so does the space: it is how a focused button is pressed, and no guess
+   * begins with one.
+   *
+   * Nothing typed at the splash is a guess either -- there is no game behind it
+   * yet -- and a box quietly filling up under it would be found the moment it
+   * lifts.
+   */
+  document.addEventListener("keydown", (event) => {
+    if (event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+    if (event.key.length !== 1 || event.key === " ") return;
+    if (elements.input.disabled || typesInto(document.activeElement)) return;
+    if (!elements.splash.hidden) return;
+
     event.preventDefault();
-    submitTyped();
+    elements.input.focus();
+    // Typing is an answer to the give-up button's question, and the answer is no.
+    if (giveUpArmed) disarmGiveUp();
+    elements.input.value += event.key;
+    const end = elements.input.value.length;
+    elements.input.setSelectionRange(end, end);
+  });
+
+  // --- Giving up ------------------------------------------------------------
+
+  /*
+   * Two presses, because one is next to the box the player is typing in and
+   * ends the day.
+   *
+   * The button asks rather than opening a dialog over the map: the question is
+   * the button, in the place the press landed, and it is answered by pressing
+   * again or by doing anything else at all. It disarms itself after a few
+   * seconds, on the next keystroke, on a press anywhere else and on every
+   * redraw, so a button left asking is never one the next press falls into.
+   */
+  const GIVE_UP_ARMED_MS = 4000;
+  let giveUpArmed = false;
+
+  function disarmGiveUp() {
+    clearTimeout(giveUpTimer);
+    giveUpArmed = false;
+    elements.giveUp.classList.remove("armed");
+    elements.giveUp.textContent = t("giveUp");
+  }
+
+  elements.giveUp.addEventListener("click", () => {
+    if (giveUpArmed) {
+      disarmGiveUp();
+      return handlers.onGiveUp();
+    }
+    giveUpArmed = true;
+    elements.giveUp.classList.add("armed");
+    elements.giveUp.textContent = t("giveUpConfirm");
+    clearTimeout(giveUpTimer);
+    giveUpTimer = setTimeout(disarmGiveUp, GIVE_UP_ARMED_MS);
   });
 
   elements.submit.addEventListener("click", submitTyped);
-  elements.giveUp.addEventListener("click", () => handlers.onGiveUp());
   elements.viewToggle.addEventListener("click", () => handlers.onToggleView());
   elements.langToggle.addEventListener("click", () => handlers.onToggleLanguage());
   elements.modeToggle.addEventListener("click", () => handlers.onToggleMode());
@@ -314,8 +436,12 @@ export function createUi(handlers) {
   // Every row in here either changes the screen or opens a panel over it, so the
   // menu steps aside once one is pressed. A disabled row fires nothing and
   // leaves it up, which is the answer to a press that did nothing.
+  //
+  // Give-up armed itself instead of firing, which is also a press that did
+  // nothing yet: the menu holds still so the second press has the same row under
+  // it as the first.
   elements.menu.addEventListener("click", (event) => {
-    if (event.target.closest("button")) setMenuOpen(false);
+    if (event.target.closest("button") && !giveUpArmed) setMenuOpen(false);
   });
 
   /**
@@ -328,6 +454,9 @@ export function createUi(handlers) {
    * behind the menu button.
    */
   document.addEventListener("pointerdown", (event) => {
+    // A press that was not the second half of the give-up press is the player
+    // going back to the game, whatever else it does.
+    if (giveUpArmed && !elements.giveUp.contains(event.target)) disarmGiveUp();
     if (elements.menuWrap.contains(event.target)) return;
     setMenuOpen(false);
     if (openPanel && !event.target.closest?.(".panel.open")) closePanel();
@@ -335,6 +464,7 @@ export function createUi(handlers) {
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
+    if (giveUpArmed) return disarmGiveUp();
     if (menuIsOpen()) return setMenuOpen(false);
     if (openPanel) closePanel();
   });
@@ -730,7 +860,9 @@ export function createUi(handlers) {
       elements.practiceNew.hidden = mode !== "practice";
       elements.input.placeholder = t("guessPlaceholder");
       elements.submit.textContent = t("guessSubmit");
-      elements.giveUp.textContent = t("giveUp");
+      // The button's own label, which puts back whatever an armed one was
+      // asking: anything that redrew the game answered the question.
+      disarmGiveUp();
       elements.practiceNew.textContent = t("practiceNew");
       elements.langToggle.textContent = t("languageName");
       // The toggle is labelled with the mode it switches *to*.

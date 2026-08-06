@@ -13,6 +13,9 @@ const STRINGS = {
     guessPlaceholder: "Guess a country",
     guessSubmit: "Guess",
     giveUp: "Give up",
+    // The same button once it has been pressed once. Short: it replaces the
+    // label in place, and a button that grew would move the row it sits in.
+    giveUpConfirm: "Really?",
     guessesTitle: (n) => `Your guesses (${n})`,
     playersTitle: "Playing today",
     statusGuesses: (n) => `${n} ${n === 1 ? "guess" : "guesses"}`,
@@ -64,6 +67,7 @@ const STRINGS = {
     guessPlaceholder: "Land raten",
     guessSubmit: "Raten",
     giveUp: "Aufgeben",
+    giveUpConfirm: "Wirklich?",
     guessesTitle: (n) => `Deine Tipps (${n})`,
     playersTitle: "Heute dabei",
     statusGuesses: (n) => `${n} ${n === 1 ? "Tipp" : "Tipps"}`,
