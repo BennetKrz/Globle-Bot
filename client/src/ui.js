@@ -105,9 +105,11 @@ export function createUi(handlers) {
     hardToggleLabel: $("hard-toggle-label"),
     guesses: $("guesses"),
     guessesTitle: $("guesses-title"),
+    guessesClose: $("guesses-close"),
     guessList: $("guess-list"),
     players: $("players"),
     playersTitle: $("players-title"),
+    playersClose: $("players-close"),
     playerNames: $("player-names"),
     playerRuns: $("player-runs"),
     playerRunRows: $("player-runs-rows"),
@@ -220,8 +222,18 @@ export function createUi(handlers) {
   const menuGroups = [...elements.menu.querySelectorAll(".menu-group")];
 
   let compact = false;
-  /** Which panel the menu has open, while there is a menu. */
-  let openPanel = null;
+
+  /*
+   * The guess list rests open on a narrow frame. It is the game's own feedback --
+   * the same list a wide frame keeps permanently on screen -- so a press on the
+   * map or the guess box leaves it alone, unlike a menu or a modal. What closes it
+   * is the player asking for the map, through the ✕ in its heading or its menu
+   * row, and `guessesDismissed` is that having happened; re-opening it clears the
+   * flag. The players sheet is a deliberate detour with no resting state of its
+   * own, so it is a plain open/closed that falls back to the guess list.
+   */
+  let guessesDismissed = false;
+  let playersOpen = false;
 
   const menuIsOpen = () => !elements.menu.hidden;
 
@@ -232,31 +244,38 @@ export function createUi(handlers) {
   }
 
   /**
-   * Show one panel, or none.
+   * Bring the two sheets in line with the flags above.
    *
-   * The two share a grid cell at this width, so opening one closes the other,
-   * and pressing the row of the one already open closes it.
+   * The two share a grid cell at this width, so the players sheet covers the
+   * guess list while it is up and the list comes back once it is gone. The guess
+   * list shows whenever it has not been dismissed and has something to show, so it
+   * returns on its own after the first guess and after the roster is closed. The
+   * row that opens each sheet reads as pressed while that sheet is on screen.
    */
-  function togglePanel(which) {
-    openPanel = openPanel === which ? null : which;
-    syncPanels();
-  }
-
-  function closePanel() {
-    openPanel = null;
-    syncPanels();
-  }
-
   function syncPanels() {
-    const panels = [
-      ["guesses", elements.guesses, elements.menuGuesses],
-      ["players", elements.players, elements.menuPlayers],
-    ];
-    for (const [name, panel, row] of panels) {
-      const on = compact && openPanel === name;
-      panel.classList.toggle("open", on);
-      row.setAttribute("aria-pressed", String(on));
+    const guessesOn = compact && !guessesDismissed && !playersOpen && !elements.guesses.hidden;
+    const playersOn = compact && playersOpen && !elements.players.hidden;
+    elements.guesses.classList.toggle("open", guessesOn);
+    elements.players.classList.toggle("open", playersOn);
+    elements.menuGuesses.setAttribute("aria-pressed", String(guessesOn));
+    elements.menuPlayers.setAttribute("aria-pressed", String(playersOn));
+  }
+
+  /** The guess list's menu row: put it away when it is up, bring it back when not. */
+  function toggleGuesses() {
+    if (!guessesDismissed && !playersOpen) {
+      guessesDismissed = true;
+    } else {
+      guessesDismissed = false;
+      playersOpen = false;
     }
+    syncPanels();
+  }
+
+  /** The players sheet's menu row: a plain toggle over the resting guess list. */
+  function togglePlayers() {
+    playersOpen = !playersOpen;
+    syncPanels();
   }
 
   /**
@@ -270,14 +289,17 @@ export function createUi(handlers) {
    */
   function syncMenu() {
     elements.menuToggle.setAttribute("aria-label", t("menu"));
+    elements.guessesClose.setAttribute("aria-label", t("close"));
+    elements.playersClose.setAttribute("aria-label", t("close"));
     elements.menuGuesses.hidden = elements.guesses.hidden;
     elements.menuGuesses.textContent = t("guessesTitle", guessCount);
     elements.menuPlayers.hidden = elements.players.hidden;
     elements.menuPlayers.textContent = t("playersTitle");
 
-    // A panel the game has just taken away cannot stay open behind the menu.
-    if (openPanel === "guesses" && elements.guesses.hidden) openPanel = null;
-    if (openPanel === "players" && elements.players.hidden) openPanel = null;
+    // A sheet the game has just taken away leaves its flag behind it: the players
+    // sheet has no resting state to fall back to, and the guess list's dismissal
+    // only bites while it has something to show, so neither needs undoing here.
+    if (playersOpen && elements.players.hidden) playersOpen = false;
 
     let above = false;
     for (const group of menuGroups) {
@@ -308,8 +330,20 @@ export function createUi(handlers) {
   }
 
   elements.menuToggle.addEventListener("click", () => setMenuOpen(!menuIsOpen()));
-  elements.menuGuesses.addEventListener("click", () => togglePanel("guesses"));
-  elements.menuPlayers.addEventListener("click", () => togglePanel("players"));
+  elements.menuGuesses.addEventListener("click", toggleGuesses);
+  elements.menuPlayers.addEventListener("click", togglePlayers);
+
+  // Each sheet carries its own close in its heading, shown only on a narrow
+  // frame where the sheet is over the map. Closing the guess list is the player
+  // asking for the map; closing the roster falls back to the resting guess list.
+  elements.guessesClose.addEventListener("click", () => {
+    guessesDismissed = true;
+    syncPanels();
+  });
+  elements.playersClose.addEventListener("click", () => {
+    playersOpen = false;
+    syncPanels();
+  });
 
   // Every row in here either changes the screen or opens a panel over it, so the
   // menu steps aside once one is pressed. A disabled row fires nothing and
@@ -319,24 +353,29 @@ export function createUi(handlers) {
   });
 
   /**
-   * A press anywhere else puts the menu and its sheet away.
+   * A press anywhere else puts the menu away.
    *
-   * Both are layers over the game, so a press outside them was meant for what is
-   * underneath -- and for a panel that is the map it is covering, which is the
-   * one thing a player with a panel open is most likely to be reaching for. It
-   * is also the only way to close a sheet in one press: the row that opened it is
-   * behind the menu button.
+   * The menu is a layer over the game, so a press outside it was meant for what
+   * is underneath. The sheets it opens are left where they are: the guess list
+   * rests open over the map on purpose, so a press on the map or the guess box
+   * must not take it down. A sheet is closed from its own heading or its menu row.
    */
   document.addEventListener("pointerdown", (event) => {
     if (elements.menuWrap.contains(event.target)) return;
     setMenuOpen(false);
-    if (openPanel && !event.target.closest?.(".panel.open")) closePanel();
   });
 
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Escape") return;
     if (menuIsOpen()) return setMenuOpen(false);
-    if (openPanel) closePanel();
+    if (playersOpen) {
+      playersOpen = false;
+      return syncPanels();
+    }
+    if (compact && !guessesDismissed && !elements.guesses.hidden) {
+      guessesDismissed = true;
+      syncPanels();
+    }
   });
 
   NARROW.addEventListener("change", applyLayout);
