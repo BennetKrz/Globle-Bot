@@ -296,10 +296,13 @@ export function createUi(handlers) {
     elements.menuPlayers.hidden = elements.players.hidden;
     elements.menuPlayers.textContent = t("playersTitle");
 
-    // A sheet the game has just taken away leaves its flag behind it: the players
-    // sheet has no resting state to fall back to, and the guess list's dismissal
-    // only bites while it has something to show, so neither needs undoing here.
+    // A sheet the game takes away drops what stood behind it. The players sheet
+    // has no resting state of its own, so it simply closes. The guess list's
+    // dismissal belongs to the run it was made in: an emptied list -- a new
+    // practice round, a reset -- clears it, so the first guess of the next round
+    // brings the list back on its own rather than staying dismissed from before.
     if (playersOpen && elements.players.hidden) playersOpen = false;
+    if (elements.guesses.hidden) guessesDismissed = false;
 
     let above = false;
     for (const group of menuGroups) {
