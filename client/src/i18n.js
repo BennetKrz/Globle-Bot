@@ -33,6 +33,7 @@ const STRINGS = {
     kmAway: (km) => `${km} km`,
     revealHint: "Ctrl-click to reveal the country name",
     menu: "Menu",
+    close: "Close",
 
     // Hard mode
     hard: "Hard",
@@ -84,6 +85,7 @@ const STRINGS = {
     kmAway: (km) => `${km} km`,
     revealHint: "Strg+Klick, um den Ländernamen zu sehen",
     menu: "Menü",
+    close: "Schließen",
 
     hard: "Schwer",
     hardLocked: "Schwer lässt sich nur vor dem ersten Tipp umstellen.",

@@ -292,13 +292,29 @@ body {
   max-width: min(460px, 56vw);
 }
 
+/* The heading row. On a wide frame it is just the title; on a narrow one it also
+   carries the sheet's close control, since the panels are sheets over the map
+   there rather than the permanent rails they are here. */
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
 .panel h2 {
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: var(--ink-dim);
-  margin-bottom: 6px;
+}
+
+/* Nothing to close while the panels are permanent side rails, so the control is
+   only ever on screen in the compact layout, where each panel is a sheet. */
+.panel-close {
+  display: none;
 }
 
 .panel ol {
@@ -938,7 +954,49 @@ body {
 }
 
 #app.compact .panel.open {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  /* The heading holds still while a long list scrolls under it: the panel clips,
+     and the body below the heading is what scrolls rather than the whole panel,
+     so the title and its close button stay reachable at the top. */
+  overflow: hidden;
+}
+
+#app.compact .panel.open > .panel-head {
+  flex: none;
+}
+
+#app.compact .panel.open > #guess-list,
+#app.compact .panel.open > #roster {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The sheet's close, in its heading. A tap on the map no longer takes a sheet
+   down -- the guess list is meant to rest open over it -- so this is how the map
+   is asked for back. */
+#app.compact .panel-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  /* Trimmed so the button does not lift the heading row taller than its text. */
+  margin: -4px -4px -4px 0;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-dim);
+  font-size: 14px;
+  line-height: 1;
+}
+
+#app.compact .panel-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
 }
 
 /* The panel has the width now, so the roster gets its columns back: the count's

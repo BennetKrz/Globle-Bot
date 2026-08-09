@@ -61,7 +61,10 @@
         </header>
 
         <section id="guesses" class="panel" hidden>
-          <h2 id="guesses-title"></h2>
+          <div class="panel-head">
+            <h2 id="guesses-title"></h2>
+            <button id="guesses-close" class="panel-close button" type="button">✕</button>
+          </div>
           <ol id="guess-list"></ol>
         </section>
 
@@ -70,7 +73,10 @@
              the middle stack moves, and because every run of squares lives in
              that one container they all move together. -->
         <section id="players" class="panel" hidden>
-          <h2 id="players-title"></h2>
+          <div class="panel-head">
+            <h2 id="players-title"></h2>
+            <button id="players-close" class="panel-close button" type="button">✕</button>
+          </div>
           <div id="roster">
             <ol id="player-names"></ol>
             <div id="player-runs" aria-hidden="true"><div id="player-runs-rows"></div></div>
