@@ -219,10 +219,92 @@ function compact(s) {
   return stripDiacritics(s).toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
 
-// Two-tier lookup: exact normalized first, then punctuation-insensitive "compact".
-// Both tiers hold the diacritic-stripped and the umlaut-expanded spelling.
+/**
+ * The words in a country name that say nothing about which country it is.
+ *
+ * A player writing a two-part name joins it with whatever their language joins
+ * things with -- "and", "und", "e", or an ampersand -- and the dataset picked
+ * one of those for them. Dropping the joiner entirely means none of the choices
+ * is wrong, and "the" and "of" go with it for the same reason.
+ */
+const FILLER_WORDS = new Set(["and", "und", "the", "of", "e", "y", "et", "la", "las", "los", "les"]);
+
+/**
+ * The long form of every short one the dataset or a player writes a name in.
+ *
+ * The dataset abbreviates to fit a map label -- "St. Vin. and Gren.",
+ * "Bosnia and Herz.", "Solomon Is." -- and a player types the name out. Both
+ * sides are folded to the same word here, so neither has to know what the other
+ * wrote. "Sankt" and "Santa" are in for the same reason from the other end: they
+ * are what a German or Italian speaker reaches for where the dataset has "St.".
+ */
+const WORD_FORMS = {
+  st: "saint",
+  ste: "saint",
+  sankt: "saint",
+  santa: "saint",
+  is: "islands",
+  isl: "islands",
+  inseln: "islands",
+  rep: "republic",
+  republik: "republic",
+  dem: "democratic",
+  demokratische: "democratic",
+  demokratischen: "democratic",
+  herz: "herzegovina",
+  herzegowina: "herzegovina",
+  gren: "grenadines",
+  grenadinen: "grenadines",
+  vin: "vincent",
+  barb: "barbuda",
+};
+
+/** The joiners a two-part name is built with, for splitting the head off one. */
+const JOINERS = new Set(["and", "und", "e", "y", "et"]);
+
+/** The words of a name, expanded and folded to their long forms. */
+function words(s) {
+  return normalize(expandUmlauts(s))
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => WORD_FORMS[word] || word);
+}
+
+/**
+ * Lowercase, diacritic-free, abbreviations spelled out, joiners dropped: the
+ * form in which "St. Vin. and Gren." and "Saint Vincent and the Grenadines" are
+ * the same string.
+ */
+function loose(s) {
+  return words(s)
+    .filter((word) => !FILLER_WORDS.has(word))
+    .join("");
+}
+
+/**
+ * The part of a name before its joiner, in loose form, or "".
+ *
+ * "Sao Tome" and "Antigua" are how those countries are spoken about, and a
+ * player who types one has named a country unambiguously -- there is no other
+ * Antigua on the board. The tail is not registered: "Nevis" or "Barbuda" alone
+ * would be, but "Herz." and "Gren." are fragments of a word rather than names.
+ */
+function looseHead(s) {
+  const parts = words(s);
+  const at = parts.findIndex((word) => JOINERS.has(word));
+  if (at < 1) return "";
+  return parts
+    .slice(0, at)
+    .filter((word) => !FILLER_WORDS.has(word))
+    .join("");
+}
+
+// Three-tier lookup: exact normalized first, then punctuation-insensitive
+// "compact", then the loose form that folds abbreviations and joiners away.
+// Every tier holds the diacritic-stripped and the umlaut-expanded spelling.
 const NAME_LOOKUP = new Map();
 const COMPACT_LOOKUP = new Map();
+const LOOSE_LOOKUP = new Map();
 /**
  * The subset of the compact tier that is a name somebody would type in full,
  * which is the only thing worth measuring a misspelling against. Abbreviations
@@ -239,6 +321,18 @@ function addLookup(name, feature, { fuzzy = true } = {}) {
     const c = compact(variant);
     if (c && !COMPACT_LOOKUP.has(c)) COMPACT_LOOKUP.set(c, feature);
     if (fuzzy && c && !FUZZY_SPELLINGS.has(c)) FUZZY_SPELLINGS.set(c, feature);
+    // Only real spellings go in the loose tier, for the same reason they are the
+    // only ones measured for a suggestion, and for one more: the tier spells
+    // abbreviations out, and a two-letter code run through it is a word it never
+    // meant to be. Israel's postal code is "IS", which is not "islands", and São
+    // Tomé's is "ST", which is not "saint". Both still resolve as codes above.
+    //
+    // The head goes in after the whole name, so a name that is another country's
+    // head keeps the tier for itself.
+    if (!fuzzy) continue;
+    for (const key of [loose(variant), looseHead(variant)]) {
+      if (key && !LOOSE_LOOKUP.has(key)) LOOSE_LOOKUP.set(key, feature);
+    }
   }
 }
 /**
@@ -278,12 +372,28 @@ for (const list of Object.values(alternateNames)) {
   }
 }
 
-/** Resolve a user-typed country name in any supported language to a feature, or null. */
+/**
+ * Resolve a user-typed country name in any supported language to a feature, or
+ * null.
+ *
+ * The tiers are tried in order rather than per spelling, so an exact name always
+ * beats a loose reading of it: the loose tier drops words, and a country whose
+ * whole name somebody typed must never lose to one whose head they happened to
+ * spell the same way.
+ */
 function findCountry(input) {
   if (!input) return null;
-  for (const variant of [input, expandUmlauts(input)]) {
-    const hit = NAME_LOOKUP.get(normalize(variant)) || COMPACT_LOOKUP.get(compact(variant));
-    if (hit) return hit;
+  const variants = [input, expandUmlauts(input)];
+  const tiers = [
+    [NAME_LOOKUP, normalize],
+    [COMPACT_LOOKUP, compact],
+    [LOOSE_LOOKUP, loose],
+  ];
+  for (const [table, key] of tiers) {
+    for (const variant of variants) {
+      const hit = table.get(key(variant));
+      if (hit) return hit;
+    }
   }
   return null;
 }
