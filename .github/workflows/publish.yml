@@ -1,0 +1,194 @@
+# Publish the activity image to this repository's container registry, and give
+# every merge its own version number.
+#
+# The trigger is a push to main, which -- now that main is protected -- is the
+# same thing as a merged pull request: protection is what stops a commit reaching
+# main any other way. The more literal `pull_request: [closed]` trigger is the
+# wrong tool here, because a pull request from a fork runs with a read-only
+# GITHUB_TOKEN regardless of the `permissions` block below, so the first outside
+# contribution merged would fail to push either the image or the tag. A push
+# event carries full permissions whoever wrote the code, because by then a
+# maintainer has merged it. Tag pushes do not re-trigger this: the `branches`
+# filter only matches refs/heads/main.
+#
+# Nothing here writes to main. That rules out the obvious design -- bump
+# package.json, commit it to main -- because GITHUB_TOKEN cannot push through a
+# protected branch, and giving a workflow a credential that could would undo the
+# protection. The version therefore lives in git tags: a release is
+# `git tag v2.3.0`, and the next release reads that tag to know it is 2.4.0.
+# Branch protection does not cover tags, so this needs no privileged token.
+# (Tag protection is a separate setting, off unless you turn it on.)
+#
+# package.json's version field is consequently not the released version, and is
+# left untouched. The tag is the version, and the image carries it in its OCI
+# labels, so `docker inspect` can answer "what is running here" on the host.
+#
+# A manual run republishes the current version rather than inventing a new one,
+# which is how the first image gets built before anything has been merged.
+#
+# Pushing to the registry needs no setup: GITHUB_TOKEN is scoped to this
+# repository's packages by the `permissions` block. What does need setting up,
+# once, is the DISCORD_CLIENT_ID repository variable (Settings -> Secrets and
+# variables -> Actions -> Variables). The Embedded App SDK needs the application
+# id before the page can make its first request, so Vite bakes it into the
+# bundle at build time.
+#
+# The build succeeds without it, which is the trap: the Dockerfile's ENV turns an
+# unset argument into an empty string, Vite inlines that empty string as a
+# constant, and the image serves a page whose handshake fails the moment a player
+# opens the activity. Nothing before that point complains. Hence the explicit
+# check below -- a green pipeline should not publish an unplayable image.
+#
+# The id is public -- every player's Discord client sees it -- which is why it is
+# a variable rather than a secret. CLIENT_SECRET and the bot token are never
+# needed here: they stay on the deployment host and never enter an image layer.
+#
+# One consequence of accepting outside branches: whatever is merged runs here
+# afterwards with these permissions, including any change to this file or to the
+# Dockerfile. Build check runs on the pull request itself with a read-only token
+# and no variables, so nothing can be extracted before review -- but changes
+# under .github/ and to the build deserve reading closely before merge.
+
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Two merges landing moments apart would otherwise read the same tag and both
+# claim the next version. Queue the runs rather than cancelling: the second merge
+# still deserves its own release.
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the release tag
+  packages: write # push the image to ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The tags hold the version, so the history that carries them is
+          # needed, not just the tip commit.
+          fetch-depth: 0
+
+      - name: Require the application id
+        env:
+          CLIENT_ID: ${{ vars.DISCORD_CLIENT_ID }}
+        run: |
+          if [ -z "$CLIENT_ID" ]; then
+            echo "::error::Set the DISCORD_CLIENT_ID repository variable under Settings -> Secrets and variables -> Actions -> Variables. Vite bakes it into the client bundle, so an image built without it cannot start the activity."
+            exit 1
+          fi
+
+      - name: Work out this release
+        id: release
+        env:
+          # A merge earns a new version; a manual run reissues the current one.
+          BUMP: ${{ github.event_name == 'push' }}
+        run: |
+          # The highest release tag so far. package.json's version seeds only the
+          # very first release, when there is no tag to read.
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          base=${latest:-v$(node -p "require('./package.json').version")}
+          IFS=. read -r major minor patch <<<"${base#v}"
+
+          if [ "$BUMP" = true ]; then
+            version="$major.$((minor + 1)).0"
+          else
+            version="$major.$minor.$patch"
+          fi
+
+          echo "Releasing $version (previous: ${latest:-none})"
+          {
+            echo "version=$version"
+            # Registry paths are lowercase, and this repository's name is not.
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "revision=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to reuse a version
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists. Two runs have claimed the same version; check the tag list before retrying."
+            exit 1
+          fi
+
+      # The Dockerfile is written to build on a 64-bit Raspberry Pi as well as a
+      # server, and the lockfiles pin prebuilt arm64 binaries for canvas,
+      # esbuild and rollup, so neither architecture needs a compiler. arm64 runs
+      # under emulation and is the slow half of the run; drop it from
+      # `platforms` below to roughly halve the wait.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VITE_DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}
+            APP_VERSION=${{ steps.release.outputs.version }}
+          tags: |
+            ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+            ${{ steps.release.outputs.image }}:latest
+          # Since the repository no longer records the version, this is where a
+          # running container's identity comes from.
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          # The layer cache lives with the workflow, so an unchanged dependency
+          # tree is not reinstalled on every merge.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Without this the registry also receives an attestation manifest,
+          # which the package page lists as an "unknown/unknown" platform.
+          provenance: false
+
+      # Last, so that a build which fails does not consume a version: the next
+      # merge reads the same tag and retries the same number.
+      - name: Tag the release
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REVISION: ${{ steps.release.outputs.revision }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "v$VERSION" "$REVISION"
+          git push origin "v$VERSION"
+
+      - name: Report what was published
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          VERSION: ${{ steps.release.outputs.version }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          {
+            echo "### Published \`$VERSION\`"
+            echo
+            echo '```'
+            echo "docker pull $IMAGE:$VERSION"
+            echo '```'
+            if [ "$EVENT" != "push" ]; then
+              echo "Manual run: republished the current version, no tag created."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

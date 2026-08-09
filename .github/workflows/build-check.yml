@@ -1,0 +1,45 @@
+# Prove the image still builds before a pull request can be merged.
+#
+# The publish workflow bumps the version only after a successful build, so a
+# broken Dockerfile cannot burn a release -- but it can leave main with no new
+# image, and the author would find out after merging rather than before. This
+# check moves that discovery into the pull request.
+#
+# It builds amd64 only and pushes nothing: the question is whether the build
+# succeeds, not whether the artifact is usable, and the emulated arm64 half would
+# double the wait for no extra answer.
+
+name: Build check
+
+on:
+  pull_request:
+    branches: [main]
+
+# A new push to the branch makes the running check obsolete.
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          # Any value compiles. The real application id is baked in only by the
+          # release build, whose bundle is the one players load.
+          build-args: |
+            VITE_DISCORD_CLIENT_ID=0
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
