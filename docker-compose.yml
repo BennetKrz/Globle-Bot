@@ -1,8 +1,24 @@
-# Run the Globle Activity, headless, surviving reboots.
+# Run the Globle Activity from the published image, headless, surviving reboots
+# and picking up new releases on its own.
 #
-#   docker compose up -d --build     build and start
+#   docker compose up -d             pull and start
 #   docker compose logs -f app       watch it connect
 #   docker compose down              stop
+#
+# Nothing here builds. The image comes from this repository's container registry,
+# published by .github/workflows/publish.yml on every merge to main, and
+# watchtower below replaces the running container whenever a newer :latest
+# appears. To try a change that has not been merged yet, build it by hand under
+# the same name and skip the pull:
+#
+#   docker build --build-arg VITE_DISCORD_CLIENT_ID="$CLIENT_ID" \
+#     -t ghcr.io/bennetkrz/globle-bot:latest .
+#   docker compose up -d --pull never
+#
+# The application id is baked into the client bundle at build time, so the
+# published image carries whatever the DISCORD_CLIENT_ID repository variable was
+# set to. CLIENT_ID in .env must be that same application, or the code the
+# browser obtains will not exchange against the app the server authenticates as.
 #
 # Registering commands (once, and again whenever they change):
 #   docker compose run --rm app npm run deploy
@@ -11,7 +27,7 @@
 # activity gets the public HTTPS address Discord requires. It is off by default
 # so a real deployment behind its own domain does not start one:
 #
-#   docker compose --profile tunnel up -d --build
+#   docker compose --profile tunnel up -d
 #   curl -s localhost:20241/quicktunnel
 #
 # That prints {"hostname":"something.trycloudflare.com"}. Paste the hostname,
@@ -22,30 +38,76 @@
 # Secrets come from a .env file next to this file (copy .env.example).
 services:
   app:
-    build:
-      context: .
-      args:
-        # Baked into the client bundle: the SDK needs it before the first
-        # request. Public, unlike CLIENT_SECRET.
-        VITE_DISCORD_CLIENT_ID: ${CLIENT_ID}
-    image: globle-activity
+    image: ghcr.io/bennetkrz/globle-bot:latest
+    # `up` asks the registry rather than settling for the copy pulled weeks ago.
+    # Watchtower keeps a long-running container current; this covers the moment
+    # of starting one. It does mean `up` needs the registry to be reachable.
+    pull_policy: always
     container_name: globle-activity
     restart: unless-stopped
     env_file: .env
     environment:
       PORT: "3000"
+    labels:
+      # The only container watchtower is allowed to touch. See its note below.
+      com.centurylinklabs.watchtower.enable: "true"
     ports:
       # Loopback only. Public access is the tunnel's job, so the server is not
       # exposed on the network directly.
       - "127.0.0.1:3000:3000"
     volumes:
-      # Named volume, so player history survives a rebuild.
+      # Named volume, so player history survives an update as well as a rebuild.
       - globle-state:/data
+
+  # Checks the registry on an interval and, when the digest behind :latest has
+  # moved, pulls it and recreates the container with the same ports, volumes and
+  # environment. That is the whole reason the release workflow keeps :latest
+  # pointing at the newest build.
+  #
+  # This is a fork, not the containrrr/watchtower everyone links to. That one has
+  # not been released since 2023 and its Docker API client is v1.25, which a
+  # current daemon refuses outright: "client version 1.25 is too old. Minimum
+  # supported API version is 1.40". The fork negotiates a modern API version and
+  # is otherwise the same program, same flags, same label.
+  #
+  # Pinned rather than :latest, so an unattended update mechanism is not itself
+  # unattended. If a future Docker release ever rejects this client the way it
+  # rejects containrrr's, that is the moment to raise this number.
+  watchtower:
+    image: nickfedor/watchtower:1.20.3
+    container_name: globle-watchtower
+    restart: unless-stopped
+    volumes:
+      # How watchtower pulls, recreates and cleans up -- and, being the Docker
+      # socket, full control of this host by another name. Mounting it read-only
+      # would not change that: the restriction applies to the socket file, not to
+      # the API calls through it. This is the price of unattended updates.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # If the GHCR package is private, watchtower cannot read the manifest
+      # without credentials. Run `docker login ghcr.io` on the host, then
+      # uncomment this to lend it the result:
+      # - ${HOME}/.docker/config.json:/config.json:ro
+    environment:
+      # Consider only containers carrying the enable label. Without this,
+      # watchtower updates every running container on the host -- including ones
+      # that have nothing to do with this project.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      # Hourly. A check that finds nothing new costs one manifest request, so
+      # this can be shortened; the image is pulled only when the digest differs.
+      WATCHTOWER_POLL_INTERVAL: "3600"
+      # Discard the superseded image once the new one is running, or the disk
+      # collects one image per release.
+      WATCHTOWER_CLEANUP: "true"
 
   tunnel:
     image: cloudflare/cloudflared:latest
     container_name: globle-tunnel
     profiles: ["tunnel"]
+    # Deliberately unlabelled, so watchtower leaves it alone. A quick tunnel
+    # that restarts comes back on a different hostname, which silently breaks
+    # the URL mapping until it is re-pasted -- not something to have happen
+    # unattended in the middle of the night.
+    #
     # The image's entrypoint is already `cloudflared --no-autoupdate`, so this
     # passes arguments only. The metrics server binds every interface because
     # its default (localhost inside the container) is unreachable from outside;
