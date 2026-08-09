@@ -54,4 +54,12 @@ VOLUME ["/data"]
 # fetches the activity from here through the tunnel.
 EXPOSE 3000
 
+# The release the workflow is building, so the container can say what it is on
+# startup; logVersion() in src/index.js prints it. Deliberately the last thing in
+# the file: this value changes on every release, and everything below an
+# invalidated layer is rebuilt, so down here it costs one metadata layer instead
+# of a fresh `npm ci`. Left empty by a local build, which is not a release.
+ARG APP_VERSION
+ENV APP_VERSION=${APP_VERSION}
+
 CMD ["node", "src/index.js"]

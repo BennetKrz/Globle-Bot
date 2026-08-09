@@ -22,6 +22,7 @@ const { createApp, listen } = require("./server");
 
 const PORT = Number(process.env.PORT || 3000);
 const DEV_LOGIN = process.env.DEV_LOGIN === "1" && process.env.NODE_ENV !== "production";
+const VERSION = process.env.APP_VERSION || "";
 
 function required(name) {
   const value = process.env[name];
@@ -88,7 +89,24 @@ function stopOn(signals, server) {
   for (const signal of signals) process.on(signal, () => stop(signal));
 }
 
+/**
+ * Say which build this is, before anything that can fail.
+ *
+ * The number is stamped into the image by the release workflow rather than read
+ * from package.json: main is protected, so the released version lives in a git
+ * tag and the manifest is never bumped. Only the image knows.
+ *
+ * A local `docker build`, or running this on the host with node, leaves
+ * APP_VERSION unset. That says something worth printing -- whatever is running
+ * is not a release -- so it gets said instead of guessed at.
+ */
+function logVersion() {
+  console.log(VERSION ? `Globle Activity v${VERSION}` : "Globle Activity (local build, unversioned)");
+}
+
 async function main() {
+  logVersion();
+
   const client = await connectToDiscord();
   require("./summary").start(client);
 
