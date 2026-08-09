@@ -1,0 +1,153 @@
+# Build the activity image on every merge to main and publish it to this
+# repository's container registry, giving each merge its own version number.
+#
+# A release is two things: the image at ghcr.io/bennetkrz/globle-bot, and the
+# minor version bump that names it. They happen in that order deliberately --
+# the version is committed only once an image carrying it exists, so a Dockerfile
+# that fails to build leaves main untouched instead of burning a version.
+#
+# The bump commit lands on main carrying [skip ci], which is how this workflow
+# avoids re-triggering itself; the job-level `if` is the second lock on that
+# door.
+#
+# Pushing to the registry needs no setup: GITHUB_TOKEN is scoped to this
+# repository's packages by the `permissions` block. What does need setting up,
+# once, is the DISCORD_CLIENT_ID repository variable (Settings -> Secrets and
+# variables -> Actions -> Variables). The Embedded App SDK needs the application
+# id before the page can make its first request, so Vite bakes it into the
+# bundle at build time.
+#
+# The build succeeds without it, which is the trap: the Dockerfile's ENV turns an
+# unset argument into an empty string, Vite inlines that empty string as a
+# constant, and the image serves a page whose handshake fails the moment a player
+# opens the activity. Nothing before that point complains. Hence the explicit
+# check below -- a green pipeline should not publish an unplayable image.
+#
+# The id is public -- every player's Discord client sees it -- which is why it is
+# a variable rather than a secret. CLIENT_SECRET and the bot token are never
+# needed here: they stay on the deployment host and never enter an image layer.
+
+name: Publish image
+
+on:
+  push:
+    branches: [main]
+  # A manual run republishes the current version without bumping it, which is
+  # how the first image gets built before any pull request has been merged.
+  workflow_dispatch:
+
+# Two merges landing close together would otherwise read the same version and
+# both try to publish it. Queue the runs rather than cancelling: the second
+# merge still deserves its own release.
+concurrency:
+  group: publish-image
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the version bump commit and its tag
+  packages: write # push the image to ghcr.io
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, because this job commits on top of main and rebases if
+          # anything landed while the image was building.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          # The version the image runs, so `npm version` writes the lockfiles in
+          # the same format the build expects.
+          node-version: 22
+
+      - name: Require the application id
+        env:
+          CLIENT_ID: ${{ vars.DISCORD_CLIENT_ID }}
+        run: |
+          if [ -z "$CLIENT_ID" ]; then
+            echo "::error::Set the DISCORD_CLIENT_ID repository variable under Settings -> Secrets and variables -> Actions -> Variables. Vite bakes it into the client bundle, so an image built without it cannot start the activity."
+            exit 1
+          fi
+
+      - name: Raise the minor version
+        if: github.event_name == 'push'
+        run: |
+          npm version minor --no-git-tag-version
+          # The client is never published on its own, but both manifests have
+          # always carried the same number and drift would only mislead.
+          npm --prefix client version minor --no-git-tag-version
+
+      - name: Name this release
+        id: release
+        run: |
+          # Registry paths are lowercase, and this repository's name is not.
+          {
+            echo "version=$(node -p 'require("./package.json").version')"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The Dockerfile is written to build on a 64-bit Raspberry Pi as well as a
+      # server, and the lockfiles pin prebuilt arm64 binaries for canvas,
+      # esbuild and rollup, so neither architecture needs a compiler. arm64 runs
+      # under emulation and is the slow half of the run; drop it from
+      # `platforms` below to roughly halve the wait.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VITE_DISCORD_CLIENT_ID=${{ vars.DISCORD_CLIENT_ID }}
+          tags: |
+            ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
+            ${{ steps.release.outputs.image }}:latest
+          # The layer cache lives with the workflow, so an unchanged dependency
+          # tree is not reinstalled on every merge.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Without this the registry also receives an attestation manifest,
+          # which the package page lists as an "unknown/unknown" platform.
+          provenance: false
+
+      # Only now that the image exists does main learn its version.
+      - name: Record the version on main
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json client/package.json client/package-lock.json
+          git commit -m "chore(release): v$VERSION [skip ci]"
+          # Something may have landed on main during the emulated build.
+          git pull --rebase origin main
+          git tag "v$VERSION"
+          git push origin HEAD:main "v$VERSION"
+
+      - name: Report what was published
+        env:
+          IMAGE: ${{ steps.release.outputs.image }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          {
+            echo "### Published \`$VERSION\`"
+            echo
+            echo '```'
+            echo "docker pull $IMAGE:$VERSION"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
