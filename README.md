@@ -253,11 +253,19 @@ At <https://discord.com/developers/applications>:
 
 ```bash
 cp .env.example .env      # fill in DISCORD_TOKEN, CLIENT_ID, CLIENT_SECRET, GUILD_ID
-docker compose --profile tunnel up -d --build
+docker compose --profile tunnel up -d
 ```
+
+Nothing is built locally: compose pulls `ghcr.io/bennetkrz/globle-bot:latest`, published by CI on
+every merge to `main`. A watchtower container checks hourly for a newer `:latest` and recreates the
+activity when it finds one, so a merge reaches the deployment without anyone logging in.
+`CLIENT_ID` in `.env` has to be the same application as the `DISCORD_CLIENT_ID` repository variable
+the image was built with, because the id is baked into the client bundle at build time.
 
 The `tunnel` profile starts a cloudflared quick tunnel, which is how the activity gets the public
 HTTPS address Discord requires.
+It is deliberately left out of watchtower's scope: a restarted quick tunnel comes back on a new
+hostname, which breaks the URL mapping until it is re-pasted.
 Read the hostname it was given:
 
 ```bash

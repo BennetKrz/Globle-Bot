@@ -1,14 +1,30 @@
-# Build the activity image on every merge to main and publish it to this
-# repository's container registry, giving each merge its own version number.
+# Publish the activity image to this repository's container registry, and give
+# every merge its own version number.
 #
-# A release is two things: the image at ghcr.io/bennetkrz/globle-bot, and the
-# minor version bump that names it. They happen in that order deliberately --
-# the version is committed only once an image carrying it exists, so a Dockerfile
-# that fails to build leaves main untouched instead of burning a version.
+# The trigger is a push to main, which -- now that main is protected -- is the
+# same thing as a merged pull request: protection is what stops a commit reaching
+# main any other way. The more literal `pull_request: [closed]` trigger is the
+# wrong tool here, because a pull request from a fork runs with a read-only
+# GITHUB_TOKEN regardless of the `permissions` block below, so the first outside
+# contribution merged would fail to push either the image or the tag. A push
+# event carries full permissions whoever wrote the code, because by then a
+# maintainer has merged it. Tag pushes do not re-trigger this: the `branches`
+# filter only matches refs/heads/main.
 #
-# The bump commit lands on main carrying [skip ci], which is how this workflow
-# avoids re-triggering itself; the job-level `if` is the second lock on that
-# door.
+# Nothing here writes to main. That rules out the obvious design -- bump
+# package.json, commit it to main -- because GITHUB_TOKEN cannot push through a
+# protected branch, and giving a workflow a credential that could would undo the
+# protection. The version therefore lives in git tags: a release is
+# `git tag v2.3.0`, and the next release reads that tag to know it is 2.4.0.
+# Branch protection does not cover tags, so this needs no privileged token.
+# (Tag protection is a separate setting, off unless you turn it on.)
+#
+# package.json's version field is consequently not the released version, and is
+# left untouched. The tag is the version, and the image carries it in its OCI
+# labels, so `docker inspect` can answer "what is running here" on the host.
+#
+# A manual run republishes the current version rather than inventing a new one,
+# which is how the first image gets built before anything has been merged.
 #
 # Pushing to the registry needs no setup: GITHUB_TOKEN is scoped to this
 # repository's packages by the `permissions` block. What does need setting up,
@@ -26,44 +42,41 @@
 # The id is public -- every player's Discord client sees it -- which is why it is
 # a variable rather than a secret. CLIENT_SECRET and the bot token are never
 # needed here: they stay on the deployment host and never enter an image layer.
+#
+# One consequence of accepting outside branches: whatever is merged runs here
+# afterwards with these permissions, including any change to this file or to the
+# Dockerfile. Build check runs on the pull request itself with a read-only token
+# and no variables, so nothing can be extracted before review -- but changes
+# under .github/ and to the build deserve reading closely before merge.
 
 name: Publish image
 
 on:
   push:
     branches: [main]
-  # A manual run republishes the current version without bumping it, which is
-  # how the first image gets built before any pull request has been merged.
   workflow_dispatch:
 
-# Two merges landing close together would otherwise read the same version and
-# both try to publish it. Queue the runs rather than cancelling: the second
-# merge still deserves its own release.
+# Two merges landing moments apart would otherwise read the same tag and both
+# claim the next version. Queue the runs rather than cancelling: the second merge
+# still deserves its own release.
 concurrency:
   group: publish-image
   cancel-in-progress: false
 
 permissions:
-  contents: write # push the version bump commit and its tag
+  contents: write # push the release tag
   packages: write # push the image to ghcr.io
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[skip ci]')
 
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history, because this job commits on top of main and rebases if
-          # anything landed while the image was building.
+          # The tags hold the version, so the history that carries them is
+          # needed, not just the tip commit.
           fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          # The version the image runs, so `npm version` writes the lockfiles in
-          # the same format the build expects.
-          node-version: 22
 
       - name: Require the application id
         env:
@@ -74,22 +87,41 @@ jobs:
             exit 1
           fi
 
-      - name: Raise the minor version
-        if: github.event_name == 'push'
-        run: |
-          npm version minor --no-git-tag-version
-          # The client is never published on its own, but both manifests have
-          # always carried the same number and drift would only mislead.
-          npm --prefix client version minor --no-git-tag-version
-
-      - name: Name this release
+      - name: Work out this release
         id: release
+        env:
+          # A merge earns a new version; a manual run reissues the current one.
+          BUMP: ${{ github.event_name == 'push' }}
         run: |
-          # Registry paths are lowercase, and this repository's name is not.
+          # The highest release tag so far. package.json's version seeds only the
+          # very first release, when there is no tag to read.
+          latest=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          base=${latest:-v$(node -p "require('./package.json').version")}
+          IFS=. read -r major minor patch <<<"${base#v}"
+
+          if [ "$BUMP" = true ]; then
+            version="$major.$((minor + 1)).0"
+          else
+            version="$major.$minor.$patch"
+          fi
+
+          echo "Releasing $version (previous: ${latest:-none})"
           {
-            echo "version=$(node -p 'require("./package.json").version')"
+            echo "version=$version"
+            # Registry paths are lowercase, and this repository's name is not.
             echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+            echo "revision=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to reuse a version
+        if: github.event_name == 'push'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::Tag v$VERSION already exists. Two runs have claimed the same version; check the tag list before retrying."
+            exit 1
+          fi
 
       # The Dockerfile is written to build on a 64-bit Raspberry Pi as well as a
       # server, and the lockfiles pin prebuilt arm64 binaries for canvas,
@@ -116,6 +148,12 @@ jobs:
           tags: |
             ${{ steps.release.outputs.image }}:${{ steps.release.outputs.version }}
             ${{ steps.release.outputs.image }}:latest
+          # Since the repository no longer records the version, this is where a
+          # running container's identity comes from.
+          labels: |
+            org.opencontainers.image.version=${{ steps.release.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.release.outputs.revision }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           # The layer cache lives with the workflow, so an unchanged dependency
           # tree is not reinstalled on every merge.
           cache-from: type=gha
@@ -124,25 +162,24 @@ jobs:
           # which the package page lists as an "unknown/unknown" platform.
           provenance: false
 
-      # Only now that the image exists does main learn its version.
-      - name: Record the version on main
+      # Last, so that a build which fails does not consume a version: the next
+      # merge reads the same tag and retries the same number.
+      - name: Tag the release
         if: github.event_name == 'push'
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          REVISION: ${{ steps.release.outputs.revision }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json client/package.json client/package-lock.json
-          git commit -m "chore(release): v$VERSION [skip ci]"
-          # Something may have landed on main during the emulated build.
-          git pull --rebase origin main
-          git tag "v$VERSION"
-          git push origin HEAD:main "v$VERSION"
+          git tag -a "v$VERSION" -m "v$VERSION" "$REVISION"
+          git push origin "v$VERSION"
 
       - name: Report what was published
         env:
           IMAGE: ${{ steps.release.outputs.image }}
           VERSION: ${{ steps.release.outputs.version }}
+          EVENT: ${{ github.event_name }}
         run: |
           {
             echo "### Published \`$VERSION\`"
@@ -150,4 +187,7 @@ jobs:
             echo '```'
             echo "docker pull $IMAGE:$VERSION"
             echo '```'
+            if [ "$EVENT" != "push" ]; then
+              echo "Manual run: republished the current version, no tag created."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
