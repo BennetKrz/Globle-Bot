@@ -382,10 +382,18 @@ body {
    as: a scroll container has to hold whole elements. The rows line up because
    all three stacks lay their players out on the same fixed row height, which is
    also the line height, so nothing a name or a count does can shift them. */
+/* The name column's ceiling, past which a name is cut and the width is the run's.
+
+   A length rather than a share of the panel. A share means a different thing at
+   each width the panel has, and at the narrowest of them -- the 300px rail a wide
+   frame gives it -- 40% is most of what the squares beside it need, so one long
+   Discord nickname is paid for out of everybody's guesses. A roster of short
+   names pays nothing either way: the column takes their width, not this one. */
 #roster {
   --roster-row: 20px;
+  --name-cap: 92px;
   display: grid;
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(var(--name-cap)) minmax(48px, 1fr) minmax(0, auto);
   column-gap: 8px;
   font-size: 14px;
   line-height: var(--roster-row);
@@ -400,9 +408,9 @@ body {
   align-items: center;
 }
 
-/* The name column is capped rather than given a share, so it takes what it needs
-   from a roster of short names and never more than a fraction of the panel from
-   one long one. What is left over is the run's. */
+/* Cut at the column's ceiling rather than wrapped. A player is one row high in
+   each of the three stacks, and a name that took two lines would put every row
+   below it against the wrong run. */
 #player-names li {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1011,7 +1019,7 @@ body {
 /* The panel has the width now, so the roster gets its columns back: the count's
    unit is spelled out again and the names keep their share. */
 #app.compact #roster {
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(var(--name-cap)) minmax(48px, 1fr) minmax(0, auto);
   column-gap: 8px;
 }
 
