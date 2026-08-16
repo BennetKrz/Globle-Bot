@@ -382,10 +382,20 @@ body {
    as: a scroll container has to hold whole elements. The rows line up because
    all three stacks lay their players out on the same fixed row height, which is
    also the line height, so nothing a name or a count does can shift them. */
+/* The run column's floor, eight squares' worth, which the names give way to.
+
+   A share is only a cap in the case it was written for. A roster of short names
+   leaves the name column a tenth of the panel, one long Discord nickname takes
+   the whole 40% of it, and what that takes comes off the run. So the run states
+   the width it needs before the names are given anything and they divide what is
+   left. The right way round: a name only has to be recognised, and the squares
+   are what the panel is read for. It costs a roster of short names nothing --
+   the run is a `1fr`, so it still takes everything they do not. */
 #roster {
   --roster-row: 20px;
+  --run-floor: 118px;
   display: grid;
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(40%) minmax(var(--run-floor), 1fr) minmax(0, auto);
   column-gap: 8px;
   font-size: 14px;
   line-height: var(--roster-row);
@@ -1011,7 +1021,7 @@ body {
 /* The panel has the width now, so the roster gets its columns back: the count's
    unit is spelled out again and the names keep their share. */
 #app.compact #roster {
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(40%) minmax(var(--run-floor), 1fr) minmax(0, auto);
   column-gap: 8px;
 }
 
