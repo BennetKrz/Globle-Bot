@@ -953,8 +953,9 @@ body {
 }
 
 /* Off screen until the menu opens one, and then the width of the frame: the map
-   is behind it either way, and a panel worth opening is worth reading. Only one
-   is ever open -- they share a grid cell, and ui.js closes the other. */
+   is behind it either way, and a panel worth opening is worth reading. They share
+   a grid cell, so only one is ever open: ui.js holds which one in a single value
+   that cannot name two, and clears it while the menu itself is up. */
 #app.compact .panel {
   display: none;
   justify-self: stretch;
