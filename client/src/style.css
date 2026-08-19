@@ -54,11 +54,18 @@ body,
   overflow: hidden;
 }
 
+/* Everything here is pressed rather than read out. A long press is a gesture the
+   game gave a meaning to -- the reveal on the map, the name behind a roster
+   square -- and a webview that answered it with a selection and a callout menu
+   would take the press with it, leaving a country code highlighted and its
+   country unsaid. The guess box below opts back in: its text is the player's. */
 body {
   background: #04141f;
   color: var(--ink);
   font: 15px/1.45 "gg sans", "Noto Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
   overscroll-behavior: none;
 }
 
@@ -74,10 +81,6 @@ body {
   height: var(--frame, 100%);
   display: block;
   touch-action: none; /* the board handles its own pan and pinch */
-  /* A long press over the map is the touch reveal, so the webview must not
-     answer it with a callout or a selection magnifier of its own. */
-  -webkit-touch-callout: none;
-  user-select: none;
 }
 
 /* The board is lit from nowhere -- it is drawn, not rendered -- so the light on
@@ -124,7 +127,6 @@ body {
   white-space: nowrap;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 0.9);
   transform: translateY(-2px);
-  user-select: none;
 }
 
 /* --- HUD ------------------------------------------------------------------ */
@@ -627,6 +629,7 @@ body {
 #guess-input {
   flex: 1;
   min-width: 0;
+  user-select: text;
   background: var(--surface-solid);
   color: var(--ink);
   border: 1px solid var(--edge);
