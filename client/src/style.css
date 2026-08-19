@@ -54,11 +54,18 @@ body,
   overflow: hidden;
 }
 
+/* Everything here is pressed rather than read out. A long press is a gesture the
+   game gave a meaning to -- the reveal on the map, the name behind a roster
+   square -- and a webview that answered it with a selection and a callout menu
+   would take the press with it, leaving a country code highlighted and its
+   country unsaid. The guess box below opts back in: its text is the player's. */
 body {
   background: #04141f;
   color: var(--ink);
   font: 15px/1.45 "gg sans", "Noto Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  user-select: none;
   overscroll-behavior: none;
 }
 
@@ -74,10 +81,6 @@ body {
   height: var(--frame, 100%);
   display: block;
   touch-action: none; /* the board handles its own pan and pinch */
-  /* A long press over the map is the touch reveal, so the webview must not
-     answer it with a callout or a selection magnifier of its own. */
-  -webkit-touch-callout: none;
-  user-select: none;
 }
 
 /* The board is lit from nowhere -- it is drawn, not rendered -- so the light on
@@ -124,7 +127,6 @@ body {
   white-space: nowrap;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.95), 0 1px 2px rgba(0, 0, 0, 0.9);
   transform: translateY(-2px);
-  user-select: none;
 }
 
 /* --- HUD ------------------------------------------------------------------ */
@@ -333,6 +335,29 @@ body {
   gap: 3px;
 }
 
+/* The list shows a few rows and scrolls for the rest. A finished day runs to a
+   dozen guesses and beyond, and a list given the height for all of them is a
+   column of country names down the middle of the map it is scoring.
+
+   The rows kept are the closest ones: the server ranks the board and the list is
+   drawn in the order it arrives, so the top of it is the part worth the height.
+
+   Counted in rows rather than capped in pixels, which is why the row height is
+   declared here instead of falling out of the font: `--guess-rows` of them, plus
+   a gap between each pair. */
+#guess-list {
+  --guess-row: 21px;
+  --guess-gap: 3px;
+  --guess-rows: 10;
+  gap: var(--guess-gap);
+  max-height: calc(
+    var(--guess-rows) * var(--guess-row) + (var(--guess-rows) - 1) * var(--guess-gap)
+  );
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+}
+
 /* A guess row: colour chip, country, distance. The chip carries the same fill
    the country has on the map, which is what ties the list to the board. */
 .guess {
@@ -340,6 +365,7 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 14px;
+  line-height: var(--guess-row);
 }
 
 .guess .chip {
@@ -627,6 +653,7 @@ body {
 #guess-input {
   flex: 1;
   min-width: 0;
+  user-select: text;
   background: var(--surface-solid);
   color: var(--ink);
   border: 1px solid var(--edge);
@@ -772,6 +799,13 @@ body {
   .panel {
     max-width: 48vw;
     font-size: 13px;
+  }
+
+  /* Half the rows, because the panel is a sheet across the whole frame here
+     rather than a rail down the side of it, and every row it keeps is a row of
+     map it is standing on. */
+  #guess-list {
+    --guess-rows: 5;
   }
 
   /* Half of a phone is not enough for three columns while one of them spells out
@@ -953,8 +987,9 @@ body {
 }
 
 /* Off screen until the menu opens one, and then the width of the frame: the map
-   is behind it either way, and a panel worth opening is worth reading. Only one
-   is ever open -- they share a grid cell, and ui.js closes the other. */
+   is behind it either way, and a panel worth opening is worth reading. They share
+   a grid cell, so only one is ever open: ui.js holds which one in a single value
+   that cannot name two, and clears it while the menu itself is up. */
 #app.compact .panel {
   display: none;
   justify-self: stretch;
