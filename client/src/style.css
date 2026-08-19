@@ -335,6 +335,29 @@ body {
   gap: 3px;
 }
 
+/* The list shows a few rows and scrolls for the rest. A finished day runs to a
+   dozen guesses and beyond, and a list given the height for all of them is a
+   column of country names down the middle of the map it is scoring.
+
+   The rows kept are the closest ones: the server ranks the board and the list is
+   drawn in the order it arrives, so the top of it is the part worth the height.
+
+   Counted in rows rather than capped in pixels, which is why the row height is
+   declared here instead of falling out of the font: `--guess-rows` of them, plus
+   a gap between each pair. */
+#guess-list {
+  --guess-row: 21px;
+  --guess-gap: 3px;
+  --guess-rows: 10;
+  gap: var(--guess-gap);
+  max-height: calc(
+    var(--guess-rows) * var(--guess-row) + (var(--guess-rows) - 1) * var(--guess-gap)
+  );
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
+}
+
 /* A guess row: colour chip, country, distance. The chip carries the same fill
    the country has on the map, which is what ties the list to the board. */
 .guess {
@@ -342,6 +365,7 @@ body {
   align-items: center;
   gap: 8px;
   font-size: 14px;
+  line-height: var(--guess-row);
 }
 
 .guess .chip {
@@ -775,6 +799,13 @@ body {
   .panel {
     max-width: 48vw;
     font-size: 13px;
+  }
+
+  /* Half the rows, because the panel is a sheet across the whole frame here
+     rather than a rail down the side of it, and every row it keeps is a row of
+     map it is standing on. */
+  #guess-list {
+    --guess-rows: 5;
   }
 
   /* Half of a phone is not enough for three columns while one of them spells out
