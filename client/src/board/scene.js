@@ -402,13 +402,25 @@ export function createScene(canvas, labelHost, countries) {
   let view = "tilted";
   let transition = null;
 
-  function applyView(config, { instant = false, recentre = false } = {}) {
-    const radius = fitRadius(config.phi) * (config.zoom ?? 1);
-    // Where the camera ends up pointing. A recentred swing goes back to the
-    // middle of the map, so the fit distance frames the world rather than
-    // whatever corner the player had panned to.
-    const focus = recentre ? new Vector3(0, 0, 0) : controls.target.clone();
-    const destination = positionFor(focus, radius, config.phi);
+  /** The distance a view frames the world from: the fit for its own tilt, times
+      whatever closer opening shot it asks for. */
+  function frameRadius(config) {
+    return fitRadius(config.phi) * (config.zoom ?? 1);
+  }
+
+  /**
+   * Swing the camera to a view.
+   *
+   * `zoom` is how far in the player is, as a multiple of the view's own framing
+   * distance, so 1 is that view's opening shot.
+   *
+   * The look-at point is left where the player put it, so a swing changes the
+   * tilt and nothing else. There is no world to be lost off the edge either way:
+   * `holdCamera` keeps the target on the board every frame.
+   */
+  function applyView(config, { instant = false, zoom = 1 } = {}) {
+    const radius = clamp(frameRadius(config) * zoom, controls.minDistance, controls.maxDistance);
+    const destination = positionFor(controls.target, radius, config.phi);
 
     const finish = () => {
       controls.enabled = true;
@@ -416,7 +428,6 @@ export function createScene(canvas, labelHost, countries) {
     };
 
     if (instant) {
-      controls.target.copy(focus);
       camera.position.copy(destination);
       finish();
       repaint();
@@ -427,8 +438,6 @@ export function createScene(canvas, labelHost, countries) {
     transition = {
       from: camera.position.clone(),
       to: destination,
-      panFrom: controls.target.clone(),
-      panTo: focus,
       startedAt: performance.now(),
       finish,
     };
@@ -673,9 +682,8 @@ export function createScene(canvas, labelHost, countries) {
       const progress = Math.min(1, (now - transition.startedAt) / VIEW_TRANSITION_MS);
       const eased = easeInOut(progress);
       camera.position.lerpVectors(transition.from, transition.to, eased);
-      // The look-at point travels with the camera, so a recentring swing pans
-      // and tilts as one move instead of snapping the map sideways on arrival.
-      controls.target.lerpVectors(transition.panFrom, transition.panTo, eased);
+      // The camera travels an arc around a target it never leaves, so it is
+      // re-aimed each frame rather than arriving pointed somewhere else.
       camera.lookAt(controls.target);
       if (progress === 1) {
         transition.finish();
@@ -791,14 +799,19 @@ export function createScene(canvas, labelHost, countries) {
     /**
      * Switch between the tilted board and the straight-down flat map.
      *
-     * The swing also pans back to the middle of the map: switching view is the
-     * one control that reframes the board, so it doubles as the way out of a
-     * pan that has lost the world off the edge of the frame.
+     * How far in the player has zoomed crosses with them, carried as the multiple
+     * of the framing distance it is rather than as the distance itself. The two
+     * views frame the same world from different heights, so a distance handed
+     * over verbatim would arrive as a different amount of map; the ratio arrives
+     * as the same one. A board nobody has zoomed is at a multiple of 1, which is
+     * each view's own opening shot, so switching an untouched board still opens
+     * the other view the way it opens on its own.
      */
     setView(next) {
       if (next === view || !VIEWS[next]) return;
+      const zoom = camera.position.distanceTo(controls.target) / frameRadius(VIEWS[view]);
       view = next;
-      applyView(VIEWS[next], { recentre: true });
+      applyView(VIEWS[next], { zoom });
     },
 
     getView: () => view,

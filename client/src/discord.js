@@ -17,13 +17,14 @@ import { DiscordSDK } from "@discord/embedded-app-sdk";
 import { openSession, openDevSession } from "./api.js";
 
 /**
- * `identify` names the player and reveals their Discord language,
- * `guilds.members.read` gets their server nickname, and
+ * `identify` names the player and reveals their Discord language, and
+ * `guilds.members.read` gets their server nickname.
+ *
  * `applications.commands` is deliberately absent, though the SDK's own samples
  * request it. It installs commands into a guild, so asking for it turns the
  * player's consent screen into an install prompt with a server picker that only
  * a member holding Manage Server can answer. This app's commands are registered
- * with the bot token, so no player is ever the one granting them..
+ * with the bot token, so no player is ever the one granting them.
  */
 const SCOPES = ["identify", "guilds.members.read"];
 
