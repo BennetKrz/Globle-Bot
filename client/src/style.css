@@ -398,11 +398,23 @@ body {
    each with the run of squares their guesses have scored so far.
 
    A long day outgrows the panel, and the run is the only part of a row that
-   does, so the run is the only part that scrolls: names on the left and counts
-   on the right sit outside the scroll container and hold still, and the runs
-   move under them. All of them at once -- one container holds every run, so a
-   row can never come apart from the name it belongs to, and there is one
+   does, so the run is the only part that scrolls sideways: names on the left and
+   counts on the right sit outside that scroll container and hold still, and the
+   runs move under them. All of them at once -- one container holds every run, so
+   a row can never come apart from the name it belongs to, and there is one
    scrollbar for the roster rather than one per player.
+
+   Downwards the whole grid moves together, capped at `--roster-rows` players and
+   scrolling for the ones past it. A full lobby would otherwise be a column of
+   names down the map it is scoring, which is the same reason the guess list is
+   capped. The heading is outside the cap and stays put.
+
+   A name stops at `--name-cap` and is cut there. That is a length rather than a
+   share of the panel, because a share means a different thing at each width the
+   panel has: at the narrowest of them, the 300px rail a wide frame gives the
+   roster, 40% is most of what the squares beside it need, so one long Discord
+   nickname is paid for out of everybody's guesses. A roster of ordinary handles
+   pays nothing either way, since the column takes their width and not this one.
 
    That is why this is three stacks rather than the single grid of rows it reads
    as: a scroll container has to hold whole elements. The rows line up because
@@ -410,9 +422,18 @@ body {
    also the line height, so nothing a name or a count does can shift them. */
 #roster {
   --roster-row: 20px;
+  --roster-gap: 3px;
+  --roster-rows: 10;
+  --name-cap: 92px;
   display: grid;
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(var(--name-cap)) minmax(48px, 1fr) minmax(0, auto);
   column-gap: 8px;
+  max-height: calc(
+    var(--roster-rows) * var(--roster-row) + (var(--roster-rows) - 1) * var(--roster-gap)
+  );
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scrollbar-width: thin;
   font-size: 14px;
   line-height: var(--roster-row);
 }
@@ -422,13 +443,13 @@ body {
 #player-scores {
   display: grid;
   grid-auto-rows: var(--roster-row);
-  row-gap: 3px;
+  row-gap: var(--roster-gap);
   align-items: center;
 }
 
-/* The name column is capped rather than given a share, so it takes what it needs
-   from a roster of short names and never more than a fraction of the panel from
-   one long one. What is left over is the run's. */
+/* Cut at the column's ceiling rather than wrapped. A player is one row high in
+   each of the three stacks, and a name that took two lines would put every row
+   below it against the wrong run. */
 #player-names li {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -815,6 +836,10 @@ body {
      which are the part of a row this panel is for; the runs keep enough for a
      couple of squares and scroll for the rest, as they do at any width. */
   #roster {
+    /* Half the players, for the same reason the guess list keeps half its rows:
+       the panel is a sheet across the whole frame here rather than a rail down
+       the side of it, so every row it keeps stands on the map. */
+    --roster-rows: 5;
     font-size: 13px;
     grid-template-columns: fit-content(50%) minmax(36px, 1fr) minmax(0, auto);
     column-gap: 6px;
@@ -1046,7 +1071,7 @@ body {
 /* The panel has the width now, so the roster gets its columns back: the count's
    unit is spelled out again and the names keep their share. */
 #app.compact #roster {
-  grid-template-columns: fit-content(40%) minmax(48px, 1fr) minmax(0, auto);
+  grid-template-columns: fit-content(var(--name-cap)) minmax(48px, 1fr) minmax(0, auto);
   column-gap: 8px;
 }
 
