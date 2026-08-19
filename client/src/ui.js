@@ -346,16 +346,21 @@ export function createUi(handlers) {
   let compact = false;
 
   /*
-   * The guess list rests open on a narrow frame. It is the game's own feedback --
-   * the same list a wide frame keeps permanently on screen -- so a press on the
-   * map or the guess box leaves it alone, unlike a menu or a modal. What closes it
-   * is the player asking for the map, through the ✕ in its heading or its menu
-   * row, and `guessesDismissed` is that having happened; re-opening it clears the
-   * flag. The players sheet is a deliberate detour with no resting state of its
-   * own, so it is a plain open/closed that falls back to the guess list.
+   * Which sheet is over the map, or null for the map alone.
+   *
+   * One value rather than a flag per sheet. The two share a grid cell, so a pair
+   * of flags is a pair that can both be set, and what that draws is not one sheet
+   * on top of the other: both are translucent, so the longer list shows through
+   * the shorter panel and neither reads as the one in front. A value that cannot
+   * name two sheets is the guarantee that no arrangement of presses produces one.
+   *
+   * The guess list is where a narrow frame rests. It is the game's own feedback,
+   * the same list a wide frame keeps permanently on screen, so a press on the map
+   * or the guess box leaves it alone; what takes it down is the player asking for
+   * the map, through the ✕ in its heading or its menu row. A run with nothing in
+   * it arms the list again, so the first guess of the next round opens it.
    */
-  let guessesDismissed = false;
-  let playersOpen = false;
+  let sheet = "guesses";
 
   const menuIsOpen = () => !elements.menu.hidden;
 
@@ -363,40 +368,29 @@ export function createUi(handlers) {
     const on = open && compact;
     elements.menu.hidden = !on;
     elements.menuToggle.setAttribute("aria-expanded", String(on));
-  }
-
-  /**
-   * Bring the two sheets in line with the flags above.
-   *
-   * The two share a grid cell at this width, so the players sheet covers the
-   * guess list while it is up and the list comes back once it is gone. The guess
-   * list shows whenever it has not been dismissed and has something to show, so it
-   * returns on its own after the first guess and after the roster is closed. The
-   * row that opens each sheet reads as pressed while that sheet is on screen.
-   */
-  function syncPanels() {
-    const guessesOn = compact && !guessesDismissed && !playersOpen && !elements.guesses.hidden;
-    const playersOn = compact && playersOpen && !elements.players.hidden;
-    elements.guesses.classList.toggle("open", guessesOn);
-    elements.players.classList.toggle("open", playersOn);
-    elements.menuGuesses.setAttribute("aria-pressed", String(guessesOn));
-    elements.menuPlayers.setAttribute("aria-pressed", String(playersOn));
-  }
-
-  /** The guess list's menu row: put it away when it is up, bring it back when not. */
-  function toggleGuesses() {
-    if (!guessesDismissed && !playersOpen) {
-      guessesDismissed = true;
-    } else {
-      guessesDismissed = false;
-      playersOpen = false;
-    }
     syncPanels();
   }
 
-  /** The players sheet's menu row: a plain toggle over the resting guess list. */
-  function togglePlayers() {
-    playersOpen = !playersOpen;
+  /**
+   * Bring the two sheets in line with `sheet`.
+   *
+   * The menu is a layer over the same corner of the frame, and it is what opens a
+   * sheet in the first place, so an open menu holds both of them off screen
+   * rather than being read through one. Stepped aside, not put away: `sheet` is
+   * untouched, so closing the menu brings the same sheet straight back and the row
+   * that opened it reads as pressed throughout.
+   */
+  function syncPanels() {
+    const showing = compact && !menuIsOpen() ? sheet : null;
+    elements.guesses.classList.toggle("open", showing === "guesses" && !elements.guesses.hidden);
+    elements.players.classList.toggle("open", showing === "players" && !elements.players.hidden);
+    elements.menuGuesses.setAttribute("aria-pressed", String(sheet === "guesses"));
+    elements.menuPlayers.setAttribute("aria-pressed", String(sheet === "players"));
+  }
+
+  /** A sheet's menu row: open it, or put it away when it is the one already up. */
+  function toggleSheet(which) {
+    sheet = sheet === which ? null : which;
     syncPanels();
   }
 
@@ -418,13 +412,12 @@ export function createUi(handlers) {
     elements.menuPlayers.hidden = elements.players.hidden;
     elements.menuPlayers.textContent = t("playersTitle");
 
-    // A sheet the game takes away drops what stood behind it. The players sheet
-    // has no resting state of its own, so it simply closes. The guess list's
-    // dismissal belongs to the run it was made in: an emptied list -- a new
-    // practice round, a reset -- clears it, so the first guess of the next round
-    // brings the list back on its own rather than staying dismissed from before.
-    if (playersOpen && elements.players.hidden) playersOpen = false;
-    if (elements.guesses.hidden) guessesDismissed = false;
+    // A sheet the game takes away leaves the map rather than the other sheet.
+    // The guess list's dismissal belongs to the run it was made in, so an emptied
+    // list -- a new practice round, a reset -- arms it again and the first guess
+    // of the next round opens it instead of it staying dismissed from before.
+    if (sheet === "players" && elements.players.hidden) sheet = null;
+    if (sheet === null && elements.guesses.hidden) sheet = "guesses";
 
     let above = false;
     for (const group of menuGroups) {
@@ -455,20 +448,18 @@ export function createUi(handlers) {
   }
 
   elements.menuToggle.addEventListener("click", () => setMenuOpen(!menuIsOpen()));
-  elements.menuGuesses.addEventListener("click", toggleGuesses);
-  elements.menuPlayers.addEventListener("click", togglePlayers);
+  elements.menuGuesses.addEventListener("click", () => toggleSheet("guesses"));
+  elements.menuPlayers.addEventListener("click", () => toggleSheet("players"));
 
-  // Each sheet carries its own close in its heading, shown only on a narrow
-  // frame where the sheet is over the map. Closing the guess list is the player
-  // asking for the map; closing the roster falls back to the resting guess list.
-  elements.guessesClose.addEventListener("click", () => {
-    guessesDismissed = true;
-    syncPanels();
-  });
-  elements.playersClose.addEventListener("click", () => {
-    playersOpen = false;
-    syncPanels();
-  });
+  // Each sheet carries its own close in its heading, shown only on a narrow frame
+  // where the sheet is over the map. Closing one is the player asking for the
+  // map, so it leaves the map and not the other sheet.
+  for (const close of [elements.guessesClose, elements.playersClose]) {
+    close.addEventListener("click", () => {
+      sheet = null;
+      syncPanels();
+    });
+  }
 
   // Every row in here either changes the screen or opens a panel over it, so the
   // menu steps aside once one is pressed. A disabled row fires nothing and
@@ -501,12 +492,8 @@ export function createUi(handlers) {
     if (event.key !== "Escape") return;
     if (giveUpArmed) return disarmGiveUp();
     if (menuIsOpen()) return setMenuOpen(false);
-    if (playersOpen) {
-      playersOpen = false;
-      return syncPanels();
-    }
-    if (compact && !guessesDismissed && !elements.guesses.hidden) {
-      guessesDismissed = true;
+    if (compact && sheet) {
+      sheet = null;
       syncPanels();
     }
   });
